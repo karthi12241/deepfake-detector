@@ -6,11 +6,18 @@
   Run: streamlit run demo_app.py
 =============================================================
 """
-import os, requests
+import os
+from pathlib import Path
 
-def download_model(destination="best.pt"):
+import requests
+
+ROOT = Path(__file__).resolve().parent
+DRIVE_MODEL_PATH = Path("/content/drive/MyDrive/new_dataset_deepfake/best.pt")
+
+def download_model(destination=ROOT / "best.pt"):
     """Auto-download model from Google Drive if not present."""
-    if os.path.exists(destination):
+    destination = Path(destination)
+    if destination.exists():
         return  # already downloaded
     
     print("Downloading model checkpoint...")
@@ -18,13 +25,26 @@ def download_model(destination="best.pt"):
     file_id = "1ssg4HbrIpbxewCu3E7Tp7vTw2CChTD3S"
     url = f"https://drive.google.com/uc?export=download&id={file_id}"
     
-    response = requests.get(url, stream=True)
-    with open(destination, "wb") as f:
+    response = requests.get(url, stream=True, timeout=60)
+    response.raise_for_status()
+    with destination.open("wb") as f:
         for chunk in response.iter_content(chunk_size=8192):
-            f.write(chunk)
+            if chunk:
+                f.write(chunk)
     print("Model downloaded ✅")
 
-download_model()  # runs before app starts
+
+def get_model_path() -> Path:
+    """Use the mounted Drive checkpoint, or download it for local runs."""
+    if DRIVE_MODEL_PATH.exists():
+        return DRIVE_MODEL_PATH
+
+    local_model_path = ROOT / "best.pt"
+    download_model(local_model_path)
+    return local_model_path
+
+
+MODEL_PATH = get_model_path()  # runs before app starts
 
 
 import streamlit as st
@@ -111,7 +131,7 @@ class GatedFeatureFusion(nn.Module):
         joined   = torch.cat([cnn_proj, vit_proj], dim=1)
         gate     = self.gate(joined)
         fused    = gate * cnn_proj + (1.0 - gate) * vit_proj
-        # This order must match the classifier weights in Gated/best.pt.
+        # This order must match the classifier weights in best.pt.
         return torch.cat([cnn_proj, vit_proj, fused], dim=1)  # [B, 1536]
 
 
@@ -310,7 +330,7 @@ st.sidebar.title("⚙️ Configuration")
 
 checkpoint_path = st.sidebar.text_input(
     "Model Checkpoint (.pt)",
-    value=str(ROOT / "Gated" / "best.pt"),
+    value=str(MODEL_PATH),
     help="Path to your trained Gated Fusion model checkpoint"
 )
 
