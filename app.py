@@ -50,9 +50,6 @@ def get_model_path() -> Path:
     return local_model_path
 
 
-MODEL_PATH = get_model_path()  # runs before app starts
-
-
 import streamlit as st
 import torch
 import timm
@@ -78,6 +75,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+try:
+    MODEL_PATH = get_model_path()
+except Exception as error:
+    st.error(f"Unable to obtain the model checkpoint: {error}")
+    st.stop()
 
 # Custom CSS for better UI
 st.markdown("""
@@ -386,8 +389,12 @@ if not os.path.exists(checkpoint_path):
     st.stop()
 
 with st.sidebar:
-    with st.spinner("Loading model..."):
-        model = load_model(checkpoint_path)
+    try:
+        with st.spinner("Loading model..."):
+            model = load_model(checkpoint_path)
+    except Exception as error:
+        st.error(f"Could not load the model checkpoint: {error}")
+        st.stop()
     st.success("✅ Model loaded (110M params)")
     st.caption("Xception + ViT-B/16 | Gated Fusion")
 
