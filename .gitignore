@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.pt
+*.pth
+*.jpeg
+*.jpg
+holdout_test/
+holdout_evaluation/
+holdout_evaluation_smoketest/
+forensic_log.json
