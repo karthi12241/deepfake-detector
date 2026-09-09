@@ -6,6 +6,26 @@
   Run: streamlit run demo_app.py
 =============================================================
 """
+import os, requests
+
+def download_model(destination="best.pt"):
+    """Auto-download model from Google Drive if not present."""
+    if os.path.exists(destination):
+        return  # already downloaded
+    
+    print("Downloading model checkpoint...")
+    # Replace with your actual Google Drive share link
+    file_id = "1ssg4HbrIpbxewCu3E7Tp7vTw2CChTD3S"
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    
+    response = requests.get(url, stream=True)
+    with open(destination, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
+    print("Model downloaded ✅")
+
+download_model()  # runs before app starts
+
 
 import streamlit as st
 import torch
