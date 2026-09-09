@@ -8,35 +8,41 @@
 """
 import os
 from pathlib import Path
+import zipfile
 
-import requests
+import gdown
 
 ROOT = Path(__file__).resolve().parent
 DRIVE_MODEL_PATH = Path("/content/drive/MyDrive/new_dataset_deepfake/best.pt")
 
 def download_model(destination=ROOT / "best.pt"):
-    """Auto-download model from Google Drive if not present."""
+    """Download the checkpoint from Google Drive and verify its container."""
     destination = Path(destination)
+    if destination.exists() and zipfile.is_zipfile(destination):
+        return
+
     if destination.exists():
-        return  # already downloaded
-    
+        destination.unlink()
+
     print("Downloading model checkpoint...")
-    # Replace with your actual Google Drive share link
-    file_id = "1ssg4HbrIpbxewCu3E7Tp7vTw2CChTD3S"
-    url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    
-    response = requests.get(url, stream=True, timeout=60)
-    response.raise_for_status()
-    with destination.open("wb") as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
+    file_id = os.environ.get("MODEL_FILE_ID", "1ssg4HbrIpbxewCu3E7Tp7vTw2CChTD3S")
+    temporary_path = destination.with_suffix(destination.suffix + ".download")
+    gdown.download(id=file_id, output=str(temporary_path), quiet=False)
+
+    if not temporary_path.exists() or not zipfile.is_zipfile(temporary_path):
+        temporary_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            "Google Drive did not return a valid PyTorch checkpoint. "
+            "Check that MODEL_FILE_ID points to the shared best.pt file."
+        )
+
+    temporary_path.replace(destination)
     print("Model downloaded ✅")
 
 
 def get_model_path() -> Path:
     """Use the mounted Drive checkpoint, or download it for local runs."""
-    if DRIVE_MODEL_PATH.exists():
+    if DRIVE_MODEL_PATH.exists() and zipfile.is_zipfile(DRIVE_MODEL_PATH):
         return DRIVE_MODEL_PATH
 
     local_model_path = ROOT / "best.pt"
