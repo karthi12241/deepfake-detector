@@ -13,7 +13,7 @@ import zipfile
 import gdown
 
 ROOT = Path(__file__).resolve().parent
-DRIVE_MODEL_PATH = Path("/content/drive/MyDrive/new_dataset_deepfake/best.pt")
+DRIVE_MODEL_PATH = Path("/content/drive/MyDrive/new_dataset_deepfake/outputs/cross_attention_v1/best.pt")
 
 def download_model(destination=ROOT / "best.pt"):
     """Download the checkpoint from Google Drive and verify its container."""
