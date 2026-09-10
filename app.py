@@ -9,7 +9,7 @@
 import os
 from pathlib import Path
 import zipfile
-
+from streamlit_javascript import st_javascript
 import gdown
 
 ROOT = Path(__file__).resolve().parent
@@ -263,12 +263,13 @@ def get_gradcam(model, tensor, pil_image, model_kind):
     Returns (PIL overlay, None) on success, (None, error_str) on failure.
     """
     try:
-        from pytorch_grad_cam import GradCAMPlusPlus
+        from pytorch_grad_cam import GradCAMPlusPlus, LayerCAM
         from pytorch_grad_cam.utils.image import show_cam_on_image
 
-        # Use the final spatial 3x3 convolution so the CAM retains location
-        # information instead of targeting the following 1x1 projection.
-        target_layer = dict(model.cnn.named_modules()).get("conv4.conv1")
+        # Use the final feature projection used by the classifier.  It retains
+        # the spatial grid while matching the features seen by the fusion head.
+        modules = dict(model.cnn.named_modules())
+        target_layer = modules.get("conv4.pointwise") or modules.get("conv4.conv1")
         if target_layer is None:
             convolutional_layers = [
                 module for module in model.cnn.modules()
@@ -297,6 +298,9 @@ def get_gradcam(model, tensor, pil_image, model_kind):
         # Grad-CAM passes each sample's scalar binary output to the target.
         targets   = [lambda output: output.squeeze()]
         grayscale = cam(input_tensor=tensor, targets=targets)[0]
+        if float(np.nan_to_num(grayscale).std()) < 1e-6:
+            fallback_cam = LayerCAM(model=wrapper, target_layers=[target_layer])
+            grayscale = fallback_cam(input_tensor=tensor, targets=targets)[0]
         grayscale = np.nan_to_num(grayscale, nan=0.0, posinf=0.0, neginf=0.0)
         lower, upper = np.percentile(grayscale, (2, 98))
         if upper > lower:
@@ -445,7 +449,13 @@ ip_mode = st.sidebar.radio(
 )
 
 if ip_mode == "Auto-detect":
-    demo_ip = get_uploader_ip()   # silent — no display in sidebar
+    demo_ip = st_javascript("""
+        await fetch("https://api64.ipify.org?format=json")
+            .then(response => response.json())
+            .then(data => data.ip)
+    """)
+    demo_ip = demo_ip or get_uploader_ip()
+    st.sidebar.caption(f"Detected IP: {demo_ip or 'Waiting...'}")
 else:
     demo_ip = st.sidebar.selectbox(
         "Simulated Region",
