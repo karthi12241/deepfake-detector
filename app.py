@@ -420,6 +420,8 @@ init_db()
 # ──────────────────────────────────────────────
 st.sidebar.markdown("## 🔍 DeepFake Detector")
 st.sidebar.caption("Xception + ViT-B/16 · Gated Fusion · FF++")
+st.sidebar.caption("Model checkpoint")
+st.sidebar.code(str(MODEL_PATH.resolve()))
 st.sidebar.divider()
 
 # IP Source — only Demo or Auto (no manual entry)
