@@ -13,7 +13,7 @@ import zipfile
 import gdown
 
 ROOT = Path(__file__).resolve().parent
-MODEL_SOURCE = "https://drive.google.com/file/d/1q56SwOAoPCYlhskiMZ-HkKwu3yjpI16m/view?usp=sharing"
+DRIVE_MODEL_PATH = Path("/content/drive/MyDrive/new_dataset_deepfake/best.pt")
 
 def download_model(destination=ROOT / "best.pt"):
     """Download the checkpoint from Google Drive and verify its container."""
@@ -25,11 +25,9 @@ def download_model(destination=ROOT / "best.pt"):
         destination.unlink()
 
     print("Downloading model checkpoint...")
+    file_id = os.environ.get("MODEL_FILE_ID", "1q56SwOAoPCYlhskiMZ-HkKwu3yjpI16m")
     temporary_path = destination.with_suffix(destination.suffix + ".download")
-    if MODEL_SOURCE.startswith(("http://", "https://")):
-        gdown.download(url=MODEL_SOURCE, output=str(temporary_path), quiet=False)
-    else:
-        gdown.download(id=MODEL_SOURCE, output=str(temporary_path), quiet=False)
+    gdown.download(id=file_id, output=str(temporary_path), quiet=False)
 
     if not temporary_path.exists() or not zipfile.is_zipfile(temporary_path):
         temporary_path.unlink(missing_ok=True)
@@ -43,7 +41,10 @@ def download_model(destination=ROOT / "best.pt"):
 
 
 def get_model_path() -> Path:
-    """Use a bundled checkpoint, or download it from Google Drive."""
+    """Use the mounted Drive checkpoint, or download it for local runs."""
+    if DRIVE_MODEL_PATH.exists() and zipfile.is_zipfile(DRIVE_MODEL_PATH):
+        return DRIVE_MODEL_PATH
+
     local_model_path = ROOT / "best.pt"
     download_model(local_model_path)
     return local_model_path
@@ -60,7 +61,6 @@ import datetime
 import hashlib
 import requests
 import numpy as np
-from test import build_model, make_transform, unpack_checkpoint
 
 ROOT = Path(__file__).resolve().parent
 
@@ -75,7 +75,7 @@ st.set_page_config(
 )
 
 try:
-    MODEL_PATH = get_model_path().resolve()
+    MODEL_PATH = get_model_path()
 except Exception as error:
     st.error(f"Unable to obtain the model checkpoint: {error}")
     st.stop()
@@ -206,14 +206,19 @@ class XceptionViTFusionModel(nn.Module):
 # ──────────────────────────────────────────────
 @st.cache_resource
 def load_model(checkpoint_path: str):
+    model = XceptionViTFusionModel()
     ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    state, model_config = unpack_checkpoint(ckpt)
-    model = build_model(model_config, state)
+    # Handle different checkpoint formats
+    if isinstance(ckpt, dict):
+        state = (ckpt.get('model_state')
+                 or ckpt.get('model_state_dict')
+                 or ckpt.get('state_dict')
+                 or ckpt)
+    else:
+        state = ckpt
     model.load_state_dict(state)
     model.eval()
-    saved_config = ckpt.get('config', {}) if isinstance(ckpt, dict) else {}
-    image_size = int(saved_config.get('training', {}).get('image_size', 224))
-    return model, image_size
+    return model
 
 
 # ──────────────────────────────────────────────
@@ -229,9 +234,9 @@ val_transform = transforms.Compose([
     transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
 ])
 
-def predict(model, image: Image.Image, image_size: int):
+def predict(model, image: Image.Image):
     """Returns (label, confidence, tensor) where label is 'FAKE' or 'REAL'."""
-    tensor = make_transform(image_size)(image.convert("RGB")).unsqueeze(0)  # [1,3,H,W]
+    tensor = val_transform(image.convert("RGB")).unsqueeze(0)  # [1,3,224,224]
     with torch.no_grad():
         logit = model(tensor)
         prob  = torch.sigmoid(logit).item()
@@ -415,10 +420,6 @@ init_db()
 # ──────────────────────────────────────────────
 st.sidebar.markdown("## 🔍 DeepFake Detector")
 st.sidebar.caption("Xception + ViT-B/16 · Gated Fusion · FF++")
-st.sidebar.caption("Downloaded from Google Drive")
-st.sidebar.code(MODEL_SOURCE)
-st.sidebar.caption("Model loaded from")
-st.sidebar.code(str(MODEL_PATH))
 st.sidebar.divider()
 
 # IP Source — only Demo or Auto (no manual entry)
@@ -455,7 +456,7 @@ if not os.path.exists(MODEL_PATH):
     st.stop()
 
 try:
-    model, model_image_size = load_model(str(MODEL_PATH))
+    model = load_model(str(MODEL_PATH))
 except Exception as error:
     st.error(f"Model could not be loaded: {error}")
     st.stop()
@@ -509,7 +510,7 @@ with col_right:
 
     if uploaded_file and analyse_btn:
         with st.spinner("🧠 Running model inference..."):
-            label, confidence, img_tensor = predict(model, image, model_image_size)
+            label, confidence, img_tensor = predict(model, image)
             img_bytes  = uploaded_file.getvalue()
             image_hash = hashlib.sha256(img_bytes).hexdigest()
 
@@ -671,4 +672,3 @@ st.caption(
     "Xception + ViT-B/16 · Gated Feature Fusion · FaceForensics++ · "
     "Accuracy 96.0% · AUC 0.994"
 )
-
