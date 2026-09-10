@@ -263,7 +263,7 @@ def get_gradcam(model, tensor, pil_image, model_kind):
     Returns (PIL overlay, None) on success, (None, error_str) on failure.
     """
     try:
-        from pytorch_grad_cam import GradCAM
+        from pytorch_grad_cam import GradCAMPlusPlus
         from pytorch_grad_cam.utils.image import show_cam_on_image
 
         # Use the final spatial 3x3 convolution so the CAM retains location
@@ -293,7 +293,7 @@ def get_gradcam(model, tensor, pil_image, model_kind):
                 return self.m(x)
 
         wrapper   = _Wrap(model)
-        cam       = GradCAM(model=wrapper, target_layers=[target_layer])
+        cam       = GradCAMPlusPlus(model=wrapper, target_layers=[target_layer])
         # Grad-CAM passes each sample's scalar binary output to the target.
         targets   = [lambda output: output.squeeze()]
         grayscale = cam(input_tensor=tensor, targets=targets)[0]
