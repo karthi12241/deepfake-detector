@@ -15,6 +15,7 @@ import gdown
 ROOT = Path(__file__).resolve().parent
 DRIVE_MODEL_PATH = Path("/content/drive/MyDrive/new_dataset_deepfake/outputs/cross_attention_v1/best.pt")
 
+
 def download_model(destination=ROOT / "best.pt"):
     """Download the checkpoint from Google Drive and verify its container."""
     destination = Path(destination)
@@ -67,7 +68,7 @@ import numpy as np
 from test import build_model, make_transform, unpack_checkpoint
 from ip_utils import get_uploader_ip as resolve_uploader_ip
 
-ROOT = Path(_file_).resolve().parent
+ROOT = Path(__file__).resolve().parent
 
 # ──────────────────────────────────────────────
 # PAGE SETUP
@@ -149,9 +150,9 @@ st.markdown("""
 # MODEL ARCHITECTURE (matches train.ipynb exactly)
 # ──────────────────────────────────────────────
 class GatedFeatureFusion(nn.Module):
-    def _init_(self, cnn_dim: int, vit_dim: int,
+    def __init__(self, cnn_dim: int, vit_dim: int,
                  fusion_dim: int = 512, dropout: float = 0.3):
-        super()._init_()
+        super().__init__()
         self.cnn_proj = nn.Sequential(
             nn.LayerNorm(cnn_dim),
             nn.Linear(cnn_dim, fusion_dim),
@@ -180,8 +181,8 @@ class GatedFeatureFusion(nn.Module):
 
 
 class XceptionViTFusionModel(nn.Module):
-    def _init_(self, fusion_dim: int = 512, dropout: float = 0.3):
-        super()._init_()
+    def __init__(self, fusion_dim: int = 512, dropout: float = 0.3):
+        super().__init__()
         self.cnn = timm.create_model(
             'legacy_xception', pretrained=False,
             num_classes=0, global_pool=''
@@ -286,8 +287,8 @@ def get_gradcam(model, tensor, pil_image):
 
         # ── Wrapper so GradCAM sees the full pipeline ─────────────────────────
         class _Wrap(nn.Module):
-            def _init_(self, m):
-                super()._init_()
+            def __init__(self, m):
+                super().__init__()
                 self.m = m
             def forward(self, x):
                 # Do not duplicate a particular fusion path here: checkpoints
