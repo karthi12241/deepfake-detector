@@ -255,6 +255,7 @@ def get_gradcam(model, tensor, pil_image):
     """
     try:
         from pytorch_grad_cam import GradCAM
+        from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
         from pytorch_grad_cam.utils.image import show_cam_on_image
 
         # ── Find act4 (last activation before GAP) in legacy_xception ────────
@@ -287,7 +288,8 @@ def get_gradcam(model, tensor, pil_image):
 
         wrapper   = _Wrap(model)
         cam       = GradCAM(model=wrapper, target_layers=[target_layer])
-        grayscale = cam(input_tensor=tensor)[0]              # [H, W] in [0,1]
+        targets   = [ClassifierOutputTarget(0)]
+        grayscale = cam(input_tensor=tensor, targets=targets)[0]
 
         # ── Overlay on resized original ───────────────────────────────────────
         rgb     = np.array(pil_image.resize((224, 224))).astype(np.float32) / 255.0
@@ -560,7 +562,7 @@ with col_right:
 |:----------|:------|
 | IP Address | `{demo_ip}` |{loc_rows}
 | Timestamp | {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} |
-| SHA-256 Hash | `{image_hash[:32]}...` |
+| Image Fingerprint | `{image_hash[:32]}...` |
 | Filename | `{uploaded_file.name}` |
             """)
 
