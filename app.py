@@ -337,6 +337,10 @@ def inspect_layer_attribution(model, layer, tensor):
     act = np.nan_to_num(act, nan=0.0, posinf=0.0, neginf=0.0)
     grad = np.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
 
+
+
+
+
     # Channel weights: global average pooling over spatial dimensions
     alpha = np.mean(grad, axis=(2, 3), keepdims=True)  # [1, C, 1, 1]
 
