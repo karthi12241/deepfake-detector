@@ -1,6 +1,6 @@
 """
 =============================================================
-  DeepFake Detection System — Forensic Source Attribution
+  DeepFake Detection System — Forensic Image Analysis
   M.Tech Project: Enhanced Deepfake Detection
   Model: Xception + ViT-B/16 with Gated Feature Fusion
   Run: streamlit run demo_app.py
@@ -54,13 +54,17 @@ import streamlit as st
 import torch
 import timm
 import torch.nn as nn
-from torchvision import transforms
 from PIL import Image
 import json
 import datetime
 import hashlib
-import requests
 import numpy as np
+import cv2
+
+# Keep app inference identical to the evaluation notebook.  These helpers
+# inspect the checkpoint to select the correct fusion architecture and use the
+# checkpoint's recorded image size.
+from test import build_model, make_transform, unpack_checkpoint
 
 ROOT = Path(__file__).resolve().parent
 
@@ -206,147 +210,269 @@ class XceptionViTFusionModel(nn.Module):
 # ──────────────────────────────────────────────
 @st.cache_resource
 def load_model(checkpoint_path: str):
-    model = XceptionViTFusionModel()
-    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    # Handle different checkpoint formats
-    if isinstance(ckpt, dict):
-        state = (ckpt.get('model_state')
-                 or ckpt.get('model_state_dict')
-                 or ckpt.get('state_dict')
-                 or ckpt)
-    else:
-        state = ckpt
-    model.load_state_dict(state)
+    """Load exactly the model variant and input settings saved in the checkpoint.
+
+    The evaluation notebook calls ``unpack_checkpoint`` and ``build_model``;
+    using the same path here is essential because a Gated and a Bidirectional
+    checkpoint have different forward passes despite sharing the backbones.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    except TypeError:  # Support older PyTorch releases too.
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    state_dict, model_config = unpack_checkpoint(checkpoint)
+    model = build_model(model_config, state_dict).to(device)
+    model.load_state_dict(state_dict)
     model.eval()
-    return model
+    if hasattr(model, "cnn") and hasattr(model.cnn, "act4") and hasattr(model.cnn.act4, "inplace"):
+        model.cnn.act4.inplace = False
+    if hasattr(model, "cnn") and hasattr(model.cnn, "act3") and hasattr(model.cnn.act3, "inplace"):
+        model.cnn.act3.inplace = False
+
+    saved_config = checkpoint.get("config", {}) if isinstance(checkpoint, dict) else {}
+    if not isinstance(saved_config, dict):
+        saved_config = {}
+    image_size = int(saved_config.get("training", {}).get("image_size", 224))
+    model_kind = "Gated" if "fusion.gate.0.weight" in state_dict else "Bidirectional"
+    return model, make_transform(image_size), device, image_size, model_kind
 
 
 # ──────────────────────────────────────────────
 # INFERENCE
 # ──────────────────────────────────────────────
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD  = [0.229, 0.224, 0.225]
+def predict(model, transform, device, image: Image.Image, threshold: float = 0.5):
+    """Match ``Combined_evaluation(2).ipynb`` single-image inference exactly.
 
-val_transform = transforms.Compose([
-    transforms.Resize(256, interpolation=transforms.InterpolationMode.BICUBIC),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
-])
-
-def predict(model, image: Image.Image):
-    """Returns (label, confidence, tensor) where label is 'FAKE' or 'REAL'."""
-    tensor = val_transform(image.convert("RGB")).unsqueeze(0)  # [1,3,224,224]
-    with torch.no_grad():
+    The notebook evaluates the full uploaded image (no automatic face crop),
+    applies ``make_transform(image_size)``, and marks probabilities >= 0.5 as
+    FAKE.  Return the fake probability as well so the UI does not hide it.
+    """
+    tensor = transform(image.convert("RGB")).unsqueeze(0).to(device)
+    with torch.inference_mode():
         logit = model(tensor)
         prob  = torch.sigmoid(logit).item()
-    label      = "FAKE" if prob > 0.5 else "REAL"
+    label      = "FAKE" if prob >= threshold else "REAL"
     confidence = prob if label == "FAKE" else 1.0 - prob
-    return label, confidence, tensor
+    return label, confidence, prob, tensor
 
 
 # ──────────────────────────────────────────────
 # GRAD-CAM EXPLAINABILITY (XAI)
 # ──────────────────────────────────────────────
+class SingleLogitTarget:
+    """Explicit Grad-CAM target for binary single-logit classification.
+
+    This model produces a single scalar logit representing evidence for the FAKE class:
+    logit -> sigmoid(logit) -> FAKE if probability >= 0.5.
+    This target returns the model's scalar logit directly to compute d(logit)/d(conv4),
+    without assuming two classes or indexing class 1.
+    """
+    def __call__(self, model_output: torch.Tensor) -> torch.Tensor:
+        if model_output.ndim == 0:
+            return model_output
+        return model_output.reshape(-1)[0]
+
+
+def find_last_conv_layer(cnn_backbone: nn.Module) -> tuple[nn.Module | None, str]:
+    """Identify the last meaningful convolutional layer in Xception (conv4).
+
+    In timm's legacy_xception, the exit-flow layers before global average pooling are:
+    - conv4: SeparableConv2d (1024 -> 2048 channels), the final conv layer.
+    - act4: ReLU activation immediately following conv4/bn4.
+    - block12: Final residual block preceding conv3/conv4.
+
+    Returns (layer_module, layer_name).
+    """
+    if hasattr(cnn_backbone, "conv4"):
+        return cnn_backbone.conv4, "model.cnn.conv4 (SeparableConv2d)"
+
+    named_mods = dict(cnn_backbone.named_modules())
+    for target_name in ("conv4", "act4", "bn4", "block12"):
+        if target_name in named_mods:
+            mod = named_mods[target_name]
+            return mod, f"model.cnn.{target_name} ({mod.__class__.__name__})"
+
+    # Fallback: scan for any convolutional module in reverse order
+    conv_layers = [
+        (name, mod) for name, mod in cnn_backbone.named_modules()
+        if "conv" in mod.__class__.__name__.lower() and not isinstance(mod, nn.Sequential)
+    ]
+    if conv_layers:
+        name, mod = conv_layers[-1]
+        return mod, f"model.cnn.{name} ({mod.__class__.__name__})"
+
+    leaves = [(name, m) for name, m in cnn_backbone.named_modules() if len(list(m.children())) == 0]
+    if leaves:
+        name, mod = leaves[-1]
+        return mod, f"model.cnn.{name} ({mod.__class__.__name__})"
+    return None, "Unknown"
+
+
+def inspect_layer_attribution(model, layer, tensor):
+    """Compute and extract complete Grad-CAM diagnostics for a candidate layer.
+
+    Evaluates:
+    - captured activations A
+    - captured gradients G
+    - channel weights alpha_k = GAP(G)
+    - pre-ReLU weighted sum S = sum(alpha_k * A_k)
+    - post-ReLU CAM = max(0, S)
+    """
+    from pytorch_grad_cam import GradCAM
+
+    cam = GradCAM(model=model, target_layers=[layer])
+    # Execute Grad-CAM on model scalar logit
+    _ = cam(input_tensor=tensor, targets=[SingleLogitTarget()])[0]
+
+    # Captured activations [1, C, H, W]
+    act = cam.activations_and_grads.activations[0].detach().cpu().numpy()
+    # Captured gradients [1, C, H, W]
+    grad = cam.activations_and_grads.gradients[0].detach().cpu().numpy()
+
+    # Clean non-finite if any
+    act = np.nan_to_num(act, nan=0.0, posinf=0.0, neginf=0.0)
+    grad = np.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+
+
+
+    # Channel weights: global average pooling over spatial dimensions
+    alpha = np.mean(grad, axis=(2, 3), keepdims=True)  # [1, C, 1, 1]
+
+    # Pre-ReLU spatial weighted combination: S = sum_k (alpha_k * A_k)
+    weighted_sum = np.sum(alpha * act, axis=1)[0]  # [H, W]
+
+    # Post-ReLU spatial combination: max(0, S)
+    post_relu = np.maximum(weighted_sum, 0.0)
+
+    grad_max_abs = max(abs(float(np.min(grad))), abs(float(np.max(grad))))
+    grad_std = float(np.std(grad))
+
+    # Categorize status
+    if grad_max_abs <= 1e-7 or grad_std <= 1e-7:
+        status = "ZERO_GRADIENT"
+    elif float(np.max(post_relu)) <= 1e-6 or float(np.std(post_relu)) <= 1e-6:
+        status = "ZERO_CAM"
+    else:
+        status = "VALID_CAM"
+
+    diag = {
+        "status": status,
+        "act_min": float(np.min(act)),
+        "act_max": float(np.max(act)),
+        "act_mean": float(np.mean(act)),
+        "act_std": float(np.std(act)),
+        "grad_min": float(np.min(grad)),
+        "grad_max": float(np.max(grad)),
+        "grad_mean": float(np.mean(grad)),
+        "grad_std": grad_std,
+        "alpha_min": float(np.min(alpha)),
+        "alpha_max": float(np.max(alpha)),
+        "alpha_mean": float(np.mean(alpha)),
+        "alpha_std": float(np.std(alpha)),
+        "pre_relu_min": float(np.min(weighted_sum)),
+        "pre_relu_max": float(np.max(weighted_sum)),
+        "pre_relu_mean": float(np.mean(weighted_sum)),
+        "pre_relu_std": float(np.std(weighted_sum)),
+        "post_relu_min": float(np.min(post_relu)),
+        "post_relu_max": float(np.max(post_relu)),
+        "post_relu_mean": float(np.mean(post_relu)),
+        "post_relu_std": float(np.std(post_relu)),
+        "cam_min": float(np.min(post_relu)),
+        "cam_max": float(np.max(post_relu)),
+        "cam_mean": float(np.mean(post_relu)),
+        "cam_std": float(np.std(post_relu)),
+    }
+    return status, diag, post_relu
+
+
 def get_gradcam(model, tensor, pil_image):
     """
-    Grad-CAM on Xception's last conv activation (act4).
-    Returns (PIL overlay, None) on success, (None, error_str) on failure.
+    Compute Grad-CAM attribution on Xception's final spatial feature representation.
+
+    Deterministic Primary Target: model.cnn.act4 (ReLU)
+    Academic & Research Justification:
+    1. In timm's legacy_xception, act4 is the final rectified spatial feature map (2048 x 7 x 7)
+       following conv4 (SeparableConv2d) and bn4 (BatchNorm2d).
+    2. act4 is the exact representation that directly feeds Global Average Pooling:
+       cnn_f = model.cnn(x).mean(dim=(2, 3))
+       which passes into the GatedFeatureFusion module.
+    3. Its activations are non-negative (A >= 0), ensuring positive channel weights (alpha_k > 0)
+       unambiguously represent positive contributions toward the FAKE logit. In contrast, raw conv4
+       contains negative pre-activations that cause mathematical suppression and all-zero CAMs.
+    4. Deterministic selection ensures reproducible, scientifically sound evaluations rather than
+       heuristically switching layers to force a visual artifact.
+
+    Optional Diagnostic Comparison:
+    - Also inspects conv4 as an auxiliary baseline for research diagnostics without altering the primary CAM.
+
+    Returns:
+    - (PIL.Image overlay, diagnostics_dict, None) on success.
+    - (None, diagnostics_dict, "ZERO_CAM") if gradients exist but post-ReLU CAM has no positive attribution.
+    - (None, diagnostics_dict, "ZERO_GRADIENT") if gradients are negligible.
+    - (None, diagnostics_dict, error_str) on execution error.
     """
+    diagnostics = {}
     try:
-        from pytorch_grad_cam import GradCAM
         from pytorch_grad_cam.utils.image import show_cam_on_image
 
-        # ── Find act4 (last activation before GAP) in legacy_xception ────────
-        # Walk named_modules to find the last activation layer reliably
-        target_layer = None
-        for name, mod in model.cnn.named_modules():
-            if name in ("act4", "bn4", "conv4"):
-                target_layer = mod
-                break          # act4 is preferred; break on first match
+        # Deterministic primary target: act4
+        primary_target_mod = getattr(model.cnn, "act4", None)
+        primary_target_name = "model.cnn.act4 (ReLU)"
 
-        if target_layer is None:
-            # Fallback: last non-container child of cnn
-            leaves = [m for m in model.cnn.modules()
-                      if len(list(m.children())) == 0]
-            target_layer = leaves[-1] if leaves else None
+        if primary_target_mod is None:
+            # Fallback only if act4 is absent in unexpected architecture
+            primary_target_mod, primary_target_name = find_last_conv_layer(model.cnn)
 
-        if target_layer is None:
-            return None, "Cannot find target conv layer in Xception backbone."
+        if primary_target_mod is None:
+            return None, {"status": "ERROR"}, "Cannot locate candidate convolutional layers in Xception backbone."
 
-        # ── Wrapper so GradCAM sees the full pipeline ─────────────────────────
-        class _Wrap(nn.Module):
-            def __init__(self, m):
-                super().__init__()
-                self.m = m
-            def forward(self, x):
-                cnn_f = self.m.cnn(x).mean(dim=(2, 3))      # [B, 2048]
-                vit_f = self.m.vit.forward_features(x)[:, 0, :]  # [B, 768]
-                fused = self.m.fusion(cnn_f, vit_f)
-                return self.m.classifier(fused).squeeze(1)   # [B]  ← GradCAM needs 1-D
+        # Compute Grad-CAM deterministically on the primary target
+        status, diag, post_relu = inspect_layer_attribution(model, primary_target_mod, tensor)
+        diag["target_layer_name"] = primary_target_name
+        diagnostics.update(diag)
 
-        wrapper   = _Wrap(model)
-        cam       = GradCAM(model=wrapper, target_layers=[target_layer])
-        # Grad-CAM passes each sample's scalar binary output to the target.
-        targets   = [lambda output: output.squeeze()]
-        grayscale = cam(input_tensor=tensor, targets=targets)[0]
+        # Auxiliary research comparison: also inspect conv4 diagnostics if available
+        if hasattr(model.cnn, "conv4") and model.cnn.conv4 is not primary_target_mod:
+            try:
+                c4_status, c4_diag, _ = inspect_layer_attribution(model, model.cnn.conv4, tensor)
+                c4_diag["target_layer_name"] = "model.cnn.conv4 (SeparableConv2d)"
+                diagnostics["conv4_comparison"] = c4_diag
+            except Exception:
+                pass
 
-        # ── Overlay on resized original ───────────────────────────────────────
-        rgb     = np.array(pil_image.resize((224, 224))).astype(np.float32) / 255.0
-        overlay = show_cam_on_image(rgb, grayscale, use_rgb=True)
-        return Image.fromarray(overlay), None
+        # If the deterministic primary target produces ZERO_CAM or ZERO_GRADIENT,
+        # report honestly without fabricating a map or silently switching layers.
+        if status != "VALID_CAM":
+            return None, diagnostics, status
+
+        # Robust min-max normalization
+        cam_min = diag["post_relu_min"]
+        cam_max = diag["post_relu_max"]
+        norm_cam = (post_relu - cam_min) / (cam_max - cam_min)
+        norm_cam = np.clip(norm_cam, 0.0, 1.0)
+
+        # Resize CAM to original image dimensions
+        orig_w, orig_h = pil_image.size
+        cam_resized = cv2.resize(norm_cam, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+        cam_resized = np.clip(cam_resized, 0.0, 1.0)
+
+        # Overlay onto original RGB image
+        rgb = np.asarray(pil_image.convert("RGB"), dtype=np.float32) / 255.0
+        overlay = show_cam_on_image(rgb, cam_resized, use_rgb=True, image_weight=0.5)
+        return Image.fromarray(overlay), diagnostics, None
 
     except Exception as exc:
-        return None, str(exc)
-
-
-# ──────────────────────────────────────────────
-# IP GEOLOCATION
-# ──────────────────────────────────────────────
-def get_location(ip: str):
-    """
-    Returns location dict on success, or None if unavailable.
-    Uses ipapi.co (HTTPS, free, works on Streamlit Cloud).
-    """
-    if not ip or ip in ("127.0.0.1", "localhost", "::1"):
-        return None   # no real IP — caller will skip location display
-    try:
-        r = requests.get(
-            f"https://ipapi.co/{ip}/json/",
-            headers={"User-Agent": "deepfake-detector/1.0"},
-            timeout=5,
-        )
-        data = r.json()
-        if data.get("error"):
-            return None
-        return {
-            "city":       data.get("city", ""),
-            "regionName": data.get("region", ""),
-            "country":    data.get("country_name", ""),
-            "isp":        data.get("org", ""),
-        }
-    except Exception:
-        return None
+        diagnostics["status"] = "ERROR"
+        return None, diagnostics, str(exc)
 
 
 # ──────────────────────────────────────────────
 # JSON FILE LOGGING
 # ──────────────────────────────────────────────
-def get_uploader_ip() -> str:
-    """Get the client IP forwarded by a trusted reverse proxy.
-
-    Only use this after deploying behind Nginx and restricting Streamlit's
-    port 8501 to localhost. Otherwise forwarded headers can be forged.
-    """
-    try:
-        forwarded = st.context.headers.get("X-Forwarded-For", "")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        return str(st.context.ip or "")
-    except Exception:
-        return ""
-
-
 LOG_PATH = ROOT / "forensic_log.json"
 
 
@@ -372,17 +498,12 @@ def save_log(data: list):
         json.dump(data, f, indent=2)
 
 
-def log_detection(ip: str, loc: dict, confidence: float,
-                  image_hash: str, filename: str):
+def log_detection(confidence: float, image_hash: str, filename: str, verdict: str = "FAKE"):
     """Append a new detection entry to the JSON log."""
     data = load_log()
     entry = {
         "timestamp":  datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ip_address": ip,
-        "city":       loc.get("city", "Unknown"),
-        "region":     loc.get("regionName", "Unknown"),
-        "country":    loc.get("country", "Unknown"),
-        "isp":        loc.get("isp", "Unknown"),
+        "verdict":    verdict,
         "confidence": round(confidence * 100, 2),
         "image_hash": image_hash,
         "filename":   filename,
@@ -391,15 +512,17 @@ def log_detection(ip: str, loc: dict, confidence: float,
     save_log(data)
 
 
-def fetch_log(limit: int = 20) -> list:
+def fetch_log(limit: int = 25) -> list:
     """Return last N detections as list of tuples (for table display)."""
     data = load_log()
     recent = data[-limit:][::-1]  # last N, newest first
     return [
         (
-            d["timestamp"], d["ip_address"], d["city"],
-            d["country"],   d["isp"],        d["confidence"],
-            d["filename"],  d["image_hash"],
+            d.get("timestamp", ""),
+            d.get("verdict", "FAKE"),
+            d.get("confidence", 0.0),
+            d.get("filename", "Unknown"),
+            d.get("image_hash", ""),
         )
         for d in recent
     ]
@@ -419,32 +542,7 @@ init_db()
 # SIDEBAR — minimal, professional
 # ──────────────────────────────────────────────
 st.sidebar.markdown("## 🔍 DeepFake Detector")
-st.sidebar.caption("Xception + ViT-B/16 · Gated Fusion · FF++")
-st.sidebar.divider()
-
-# IP Source — only Demo or Auto (no manual entry)
-st.sidebar.markdown("**Uploader Identification**")
-ip_mode = st.sidebar.radio(
-    "Mode",
-    ["Demo Mode", "Auto-detect"],
-    label_visibility="collapsed",
-    help="Demo Mode uses a simulated IP for presentation."
-)
-
-if ip_mode == "Auto-detect":
-    demo_ip = get_uploader_ip()   # silent — no display in sidebar
-else:
-    demo_ip = st.sidebar.selectbox(
-        "Simulated Region",
-        [
-            "103.45.67.89  — Mumbai",
-            "49.36.122.5   — Delhi",
-            "117.96.0.1    — Bengaluru",
-            "182.68.15.10  — Chennai",
-        ],
-        label_visibility="collapsed",
-    ).split()[0]   # extract IP only
-
+st.sidebar.caption("Xception + ViT-B/16 · checkpoint-matched fusion · FF++")
 st.sidebar.divider()
 st.sidebar.caption("M.Tech Project · Enhanced Deepfake Detection Framework")
 
@@ -456,7 +554,7 @@ if not os.path.exists(MODEL_PATH):
     st.stop()
 
 try:
-    model = load_model(str(MODEL_PATH))
+    model, inference_transform, device, image_size, model_kind = load_model(str(MODEL_PATH))
 except Exception as error:
     st.error(f"Model could not be loaded: {error}")
     st.stop()
@@ -465,7 +563,10 @@ except Exception as error:
 # MAIN PAGE
 # ──────────────────────────────────────────────
 st.markdown("## DeepFake Image Detection System")
-st.caption("Forensic Source Attribution · Xception + ViT-B/16 · Gated Feature Fusion · FaceForensics++")
+st.caption(
+    f"Forensic Source Attribution · Xception + ViT-B/16 · {model_kind} Fusion · "
+    f"FaceForensics++ · Evaluation input: {image_size}px"
+)
 st.divider()
 
 # Stats row
@@ -510,9 +611,19 @@ with col_right:
 
     if uploaded_file and analyse_btn:
         with st.spinner("🧠 Running model inference..."):
-            label, confidence, img_tensor = predict(model, image)
+            label, confidence, fake_probability, img_tensor = predict(
+                model, inference_transform, device, image
+            )
             img_bytes  = uploaded_file.getvalue()
             image_hash = hashlib.sha256(img_bytes).hexdigest()
+
+        # Log detection to database (both REAL and FAKE submissions)
+        log_detection(
+            confidence=confidence,
+            image_hash=image_hash,
+            filename=uploaded_file.name,
+            verdict=label
+        )
 
         # ── RESULT DISPLAY ──
         if label == "FAKE":
@@ -526,19 +637,9 @@ with col_right:
             m1.metric("Confidence Score", f"{confidence:.1%}")
             m2.metric("Threshold", "50.0%")
 
+            st.caption(f"Fake probability: {fake_probability:.4%} · Evaluation mode: full image (no face crop)")
+
             st.progress(float(confidence), text=f"Manipulation probability: {confidence:.1%}")
-
-            # Get geolocation silently
-            location = get_location(demo_ip)
-
-            # Log to DB
-            log_detection(
-                ip=demo_ip,
-                loc=location or {},
-                confidence=confidence,
-                image_hash=image_hash,
-                filename=uploaded_file.name
-            )
 
             # Forensic Evidence Panel
             st.markdown("---")
@@ -546,21 +647,12 @@ with col_right:
                 '<span class="badge-logged">● Evidence Recorded</span>',
                 unsafe_allow_html=True
             )
-            st.markdown("**Forensic Source Attribution**")
-
-            # Build location rows only if available
-            loc_rows = ""
-            if location:
-                loc_rows = f"""
-| City | {location.get('city', '—')} |
-| Region | {location.get('regionName', '—')} |
-| Country | {location.get('country', '—')} |
-| ISP | {location.get('isp', '—')} |"""
+            st.markdown("**Forensic Audit Record**")
 
             st.markdown(f"""
 | Attribute | Value |
 |:----------|:------|
-| IP Address | `{demo_ip}` |{loc_rows}
+| Verdict | `🚨 DEEPFAKE (Manipulated)` |
 | Timestamp | {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} |
 | Image Fingerprint | `{image_hash[:32]}...` |
 | Filename | `{uploaded_file.name}` |
@@ -569,17 +661,34 @@ with col_right:
         else:
             st.markdown("""
             <div class="real-box">
-                <h2>AUTHENTIC — No Manipulation Detected</h2>
+                <h2>✅ AUTHENTIC — No Manipulation Detected</h2>
             </div>
             """, unsafe_allow_html=True)
 
             m1, m2 = st.columns(2)
             m1.metric("Authenticity Score", f"{confidence:.1%}")
-            m2.metric("Forensic Record", "Not Created")
+            m2.metric("Forensic Record", "Recorded ✅")
+
+            st.caption(f"Fake probability: {fake_probability:.4%} · Evaluation mode: full image (no face crop)")
 
             st.progress(float(confidence), text=f"Authenticity confidence: {confidence:.1%}")
 
-            st.caption("Image passed forensic verification. No record created.")
+            # Forensic Verification Panel
+            st.markdown("---")
+            st.markdown(
+                '<span class="badge-logged" style="background:#0e2a18; border-color:#2e7d32; color:#81c784;">● Verification Recorded</span>',
+                unsafe_allow_html=True
+            )
+            st.markdown("**Forensic Verification & Audit Record**")
+
+            st.markdown(f"""
+| Attribute | Value |
+|:----------|:------|
+| Verdict | `✅ AUTHENTIC (Genuine)` |
+| Timestamp | {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} |
+| Image Fingerprint | `{image_hash[:32]}...` |
+| Filename | `{uploaded_file.name}` |
+            """)
 
     elif not uploaded_file:
         st.markdown("""
@@ -588,38 +697,68 @@ with col_right:
         **How it works:**
         1. Upload any face image
         2. Dual-branch model analyses spatial & semantic features
-        3. Manipulated images trigger forensic source attribution
-        4. All evidence is timestamped and hash-verified
+        3. Explainable AI (Grad-CAM) localizes manipulated regions for deepfakes
+        4. Complete forensic audit trail recorded with cryptographic hash
         """)
 
 # ── GRAD-CAM — full width below both columns, FAKE detections only ──────────
 if analyse_btn and label == "FAKE" and img_tensor is not None:
     st.divider()
-    st.subheader("🔬 Explainable AI — Where Was Manipulation Detected?")
-    st.caption(
-        "Grad-CAM highlights regions that most influenced the FAKE decision. "
-        "🔴 Red = high attention  ·  🔵 Blue = ignored region."
-    )
-    with st.spinner("Generating Grad-CAM heatmap..."):
-        heatmap, cam_error = get_gradcam(model, img_tensor, image)
+    st.subheader("🔬 Explainable AI — Xception Grad-CAM")
+    st.caption("🔴 Red/warm regions indicate areas with stronger contribution to the FAKE prediction through the Xception branch.")
+
+    with st.spinner("Computing Xception Grad-CAM attribution..."):
+        heatmap, diagnostics, cam_error = get_gradcam(model, img_tensor, image)
 
     if heatmap is not None:
         g1, g2 = st.columns(2)
         with g1:
-            st.image(image.resize((224, 224)),
-                     caption="📷 Original Image",
+            st.image(image,
+                     caption=f"📷 Uploaded Image ({image.size[0]}×{image.size[1]})",
                      use_container_width=True)
         with g2:
             st.image(heatmap,
-                     caption="🔴 Grad-CAM Heatmap — Manipulation Region",
+                     caption="🔴 Xception Grad-CAM Heatmap (act4)",
                      use_container_width=True)
+
+        st.markdown("""
+        **Color Mapping Guide:**  
+        🔵 **Blue:** Low contribution toward FAKE prediction  
+        🟡 **Yellow / Green:** Medium contribution  
+        🔴 **Red / Warm:** High contribution toward FAKE prediction
+        """)
+
         st.info(
-            "💡 Red/warm areas = where the model detected manipulation. "
-            "Typical patterns: mouth area (Face2Face) · jaw boundary (FaceSwap) · "
-            "skin texture (NeuralTextures)."
+            "💡 **Attribution Note:** Warm regions indicate Xception feature regions contributing positively "
+            "toward the model's FAKE logit. This is an attribution map, not proof of pixel-level manipulation.\n\n"
+            "**Architecture Context:** In this dual-branch architecture (`Xception + ViT-B/16 with Feature Fusion`), "
+            "Xception Grad-CAM targets the final spatial representation (`act4`) directly preceding global pooling and fusion. "
+            "Global semantic cues and long-range patch dependencies are processed in parallel by the Vision Transformer branch."
+        )
+    elif cam_error == "ZERO_CAM":
+        target_name = diagnostics.get("target_layer_name", "model.cnn.act4")
+        st.info(
+            f"ℹ️ **No Positive Spatial Attribution in Xception (`ZERO_CAM`)**\n\n"
+            f"Xception `{target_name}` produced no positive localized attribution for this prediction under standard Grad-CAM. "
+            f"The model may rely more on the ViT/fusion pathway or on features not localized at this layer.\n\n"
+            f"**Technical Context:** Active gradients were captured at `{target_name}`, confirming backward gradient flow "
+            f"from the FAKE logit through the classifier and gated fusion into the Xception branch. However, after channel-weighting "
+            f"($\\alpha_k$), the spatial feature combination before ReLU is $\\le 0$ across all locations, resulting in an all-zero post-ReLU CAM.\n\n"
+            f"- In Grad-CAM, negative pre-ReLU values represent features that vote *against* the FAKE class (evidence for authenticity). "
+            f"Displaying negative features as manipulated regions would be scientifically invalid.\n"
+            f"- To preserve forensic and scientific integrity, the system does not fabricate, invert, or artificially color this heatmap."
+        )
+    elif cam_error == "ZERO_GRADIENT":
+        st.info(
+            "ℹ️ **No Localized Xception Attribution Detected (Gradients ≈ 0)**\n\n"
+            "The Xception branch gradients are essentially zero for this image, indicating insufficient localized "
+            "spatial attribution in the convolutional filters. The model may rely more on the ViT/fusion pathway "
+            "or on features not localized at this layer."
         )
     else:
-        st.warning(f"⚠️ Grad-CAM could not be generated. Reason: `{cam_error}`")
+        st.warning(f"⚠️ Grad-CAM could not be computed. Reason: `{cam_error}`")
+
+
 
 # ──────────────────────────────────────────────
 # FORENSIC LOG TABLE
@@ -627,8 +766,8 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
 st.divider()
 st.subheader("📋 Forensic Detection Log")
 st.caption(
-    "All deepfake detections are automatically logged here. "
-    "This log can be exported as evidence for investigation."
+    "All image submissions (Deepfake and Authentic) are automatically logged with cryptographic hashes. "
+    "This log can be exported as forensic evidence for verification and audit trails."
 )
 
 log_rows = fetch_log(limit=25)
@@ -636,8 +775,7 @@ log_rows = fetch_log(limit=25)
 if log_rows:
     import pandas as pd
     df = pd.DataFrame(log_rows, columns=[
-        "Timestamp", "IP Address", "City", "Country",
-        "ISP", "Confidence (%)", "Filename", "Image Hash"
+        "Timestamp", "Verdict", "Confidence (%)", "Filename", "Image Hash"
     ])
     df["Image Hash"] = df["Image Hash"].str[:16] + "..."
 
@@ -646,8 +784,12 @@ if log_rows:
         use_container_width=True,
         hide_index=True,
         column_config={
+            "Verdict": st.column_config.TextColumn(
+                "Verdict",
+                help="Prediction verdict: FAKE (Manipulated) or REAL (Authentic)"
+            ),
             "Confidence (%)": st.column_config.ProgressColumn(
-                "Confidence (%)", min_value=50, max_value=100
+                "Confidence (%)", min_value=0, max_value=100
             )
         }
     )
