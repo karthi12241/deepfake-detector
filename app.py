@@ -13,7 +13,7 @@ import zipfile
 import gdown
 
 ROOT = Path(__file__).resolve().parent
-DRIVE_MODEL_PATH = Path("/content/drive/MyDrive/new_dataset_deepfake/best.pt")
+DRIVE_MODEL_PATH = Path("/content/drive/MyDrive/new_dataset_deepfake/outputs/cross_attention_v1/best.pt")
 
 def download_model(destination=ROOT / "best.pt"):
     """Download the checkpoint from Google Drive and verify its container."""
@@ -54,13 +54,17 @@ import streamlit as st
 import torch
 import timm
 import torch.nn as nn
-from torchvision import transforms
 from PIL import Image
 import json
 import datetime
 import hashlib
 import requests
 import numpy as np
+
+# Keep app inference identical to the evaluation notebook.  These helpers
+# inspect the checkpoint to select the correct fusion architecture and use the
+# checkpoint's recorded image size.
+from test import build_model, make_transform, unpack_checkpoint
 
 ROOT = Path(__file__).resolve().parent
 
@@ -206,43 +210,48 @@ class XceptionViTFusionModel(nn.Module):
 # ──────────────────────────────────────────────
 @st.cache_resource
 def load_model(checkpoint_path: str):
-    model = XceptionViTFusionModel()
-    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    # Handle different checkpoint formats
-    if isinstance(ckpt, dict):
-        state = (ckpt.get('model_state')
-                 or ckpt.get('model_state_dict')
-                 or ckpt.get('state_dict')
-                 or ckpt)
-    else:
-        state = ckpt
-    model.load_state_dict(state)
+    """Load exactly the model variant and input settings saved in the checkpoint.
+
+    The evaluation notebook calls ``unpack_checkpoint`` and ``build_model``;
+    using the same path here is essential because a Gated and a Bidirectional
+    checkpoint have different forward passes despite sharing the backbones.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    except TypeError:  # Support older PyTorch releases too.
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    state_dict, model_config = unpack_checkpoint(checkpoint)
+    model = build_model(model_config, state_dict).to(device)
+    model.load_state_dict(state_dict)
     model.eval()
-    return model
+
+    saved_config = checkpoint.get("config", {}) if isinstance(checkpoint, dict) else {}
+    if not isinstance(saved_config, dict):
+        saved_config = {}
+    image_size = int(saved_config.get("training", {}).get("image_size", 224))
+    model_kind = "Gated" if "fusion.gate.0.weight" in state_dict else "Bidirectional"
+    return model, make_transform(image_size), device, image_size, model_kind
 
 
 # ──────────────────────────────────────────────
 # INFERENCE
 # ──────────────────────────────────────────────
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD  = [0.229, 0.224, 0.225]
+def predict(model, transform, device, image: Image.Image, threshold: float = 0.5):
+    """Match ``Combined_evaluation(2).ipynb`` single-image inference exactly.
 
-val_transform = transforms.Compose([
-    transforms.Resize(256, interpolation=transforms.InterpolationMode.BICUBIC),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
-])
-
-def predict(model, image: Image.Image):
-    """Returns (label, confidence, tensor) where label is 'FAKE' or 'REAL'."""
-    tensor = val_transform(image.convert("RGB")).unsqueeze(0)  # [1,3,224,224]
-    with torch.no_grad():
+    The notebook evaluates the full uploaded image (no automatic face crop),
+    applies ``make_transform(image_size)``, and marks probabilities >= 0.5 as
+    FAKE.  Return the fake probability as well so the UI does not hide it.
+    """
+    tensor = transform(image.convert("RGB")).unsqueeze(0).to(device)
+    with torch.inference_mode():
         logit = model(tensor)
         prob  = torch.sigmoid(logit).item()
-    label      = "FAKE" if prob > 0.5 else "REAL"
+    label      = "FAKE" if prob >= threshold else "REAL"
     confidence = prob if label == "FAKE" else 1.0 - prob
-    return label, confidence, tensor
+    return label, confidence, prob, tensor
 
 
 # ──────────────────────────────────────────────
@@ -280,10 +289,10 @@ def get_gradcam(model, tensor, pil_image):
                 super().__init__()
                 self.m = m
             def forward(self, x):
-                cnn_f = self.m.cnn(x).mean(dim=(2, 3))      # [B, 2048]
-                vit_f = self.m.vit.forward_features(x)[:, 0, :]  # [B, 768]
-                fused = self.m.fusion(cnn_f, vit_f)
-                return self.m.classifier(fused).squeeze(1)   # [B]  ← GradCAM needs 1-D
+                # Do not duplicate a particular fusion path here: checkpoints
+                # can be Gated or Bidirectional.  Calling the model itself
+                # preserves the exact inference path used for its prediction.
+                return self.m(x)
 
         wrapper   = _Wrap(model)
         cam       = GradCAM(model=wrapper, target_layers=[target_layer])
@@ -419,7 +428,7 @@ init_db()
 # SIDEBAR — minimal, professional
 # ──────────────────────────────────────────────
 st.sidebar.markdown("## 🔍 DeepFake Detector")
-st.sidebar.caption("Xception + ViT-B/16 · Gated Fusion · FF++")
+st.sidebar.caption("Xception + ViT-B/16 · checkpoint-matched fusion · FF++")
 st.sidebar.divider()
 
 # IP Source — only Demo or Auto (no manual entry)
@@ -456,7 +465,7 @@ if not os.path.exists(MODEL_PATH):
     st.stop()
 
 try:
-    model = load_model(str(MODEL_PATH))
+    model, inference_transform, device, image_size, model_kind = load_model(str(MODEL_PATH))
 except Exception as error:
     st.error(f"Model could not be loaded: {error}")
     st.stop()
@@ -465,7 +474,10 @@ except Exception as error:
 # MAIN PAGE
 # ──────────────────────────────────────────────
 st.markdown("## DeepFake Image Detection System")
-st.caption("Forensic Source Attribution · Xception + ViT-B/16 · Gated Feature Fusion · FaceForensics++")
+st.caption(
+    f"Forensic Source Attribution · Xception + ViT-B/16 · {model_kind} Fusion · "
+    f"FaceForensics++ · Evaluation input: {image_size}px"
+)
 st.divider()
 
 # Stats row
@@ -510,7 +522,9 @@ with col_right:
 
     if uploaded_file and analyse_btn:
         with st.spinner("🧠 Running model inference..."):
-            label, confidence, img_tensor = predict(model, image)
+            label, confidence, fake_probability, img_tensor = predict(
+                model, inference_transform, device, image
+            )
             img_bytes  = uploaded_file.getvalue()
             image_hash = hashlib.sha256(img_bytes).hexdigest()
 
@@ -525,6 +539,8 @@ with col_right:
             m1, m2 = st.columns(2)
             m1.metric("Confidence Score", f"{confidence:.1%}")
             m2.metric("Threshold", "50.0%")
+
+            st.caption(f"Fake probability: {fake_probability:.4%} · Evaluation mode: full image (no face crop)")
 
             st.progress(float(confidence), text=f"Manipulation probability: {confidence:.1%}")
 
@@ -576,6 +592,8 @@ with col_right:
             m1, m2 = st.columns(2)
             m1.metric("Authenticity Score", f"{confidence:.1%}")
             m2.metric("Forensic Record", "Not Created")
+
+            st.caption(f"Fake probability: {fake_probability:.4%} · Evaluation mode: full image (no face crop)")
 
             st.progress(float(confidence), text=f"Authenticity confidence: {confidence:.1%}")
 
