@@ -9,10 +9,10 @@
 import os
 from pathlib import Path
 import zipfile
-from streamlit_javascript import st_javascript
+
 import gdown
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(_file_).resolve().parent
 DRIVE_MODEL_PATH = Path("/content/drive/MyDrive/new_dataset_deepfake/outputs/cross_attention_v1/best.pt")
 
 def download_model(destination=ROOT / "best.pt"):
@@ -65,8 +65,9 @@ import numpy as np
 # inspect the checkpoint to select the correct fusion architecture and use the
 # checkpoint's recorded image size.
 from test import build_model, make_transform, unpack_checkpoint
+from ip_utils import get_uploader_ip as resolve_uploader_ip
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(_file_).resolve().parent
 
 # ──────────────────────────────────────────────
 # PAGE SETUP
@@ -148,9 +149,9 @@ st.markdown("""
 # MODEL ARCHITECTURE (matches train.ipynb exactly)
 # ──────────────────────────────────────────────
 class GatedFeatureFusion(nn.Module):
-    def __init__(self, cnn_dim: int, vit_dim: int,
+    def _init_(self, cnn_dim: int, vit_dim: int,
                  fusion_dim: int = 512, dropout: float = 0.3):
-        super().__init__()
+        super()._init_()
         self.cnn_proj = nn.Sequential(
             nn.LayerNorm(cnn_dim),
             nn.Linear(cnn_dim, fusion_dim),
@@ -179,8 +180,8 @@ class GatedFeatureFusion(nn.Module):
 
 
 class XceptionViTFusionModel(nn.Module):
-    def __init__(self, fusion_dim: int = 512, dropout: float = 0.3):
-        super().__init__()
+    def _init_(self, fusion_dim: int = 512, dropout: float = 0.3):
+        super()._init_()
         self.cnn = timm.create_model(
             'legacy_xception', pretrained=False,
             num_classes=0, global_pool=''
@@ -212,7 +213,7 @@ class XceptionViTFusionModel(nn.Module):
 def load_model(checkpoint_path: str):
     """Load exactly the model variant and input settings saved in the checkpoint.
 
-    The evaluation notebook calls ``unpack_checkpoint`` and ``build_model``;
+    The evaluation notebook calls `unpack_checkpoint` and `build_model`;
     using the same path here is essential because a Gated and a Bidirectional
     checkpoint have different forward passes despite sharing the backbones.
     """
@@ -239,10 +240,10 @@ def load_model(checkpoint_path: str):
 # INFERENCE
 # ──────────────────────────────────────────────
 def predict(model, transform, device, image: Image.Image, threshold: float = 0.5):
-    """Match ``Combined_evaluation(2).ipynb`` single-image inference exactly.
+    """Match `Combined_evaluation(2).ipynb` single-image inference exactly.
 
     The notebook evaluates the full uploaded image (no automatic face crop),
-    applies ``make_transform(image_size)``, and marks probabilities >= 0.5 as
+    applies `make_transform(image_size)`, and marks probabilities >= 0.5 as
     FAKE.  Return the fake probability as well so the UI does not hide it.
     """
     tensor = transform(image.convert("RGB")).unsqueeze(0).to(device)
@@ -257,56 +258,48 @@ def predict(model, transform, device, image: Image.Image, threshold: float = 0.5
 # ──────────────────────────────────────────────
 # GRAD-CAM EXPLAINABILITY (XAI)
 # ──────────────────────────────────────────────
-def get_gradcam(model, tensor, pil_image, model_kind):
+def get_gradcam(model, tensor, pil_image):
     """
-    Grad-CAM on Xception's final spatial convolution.
+    Grad-CAM on Xception's last conv activation (act4).
     Returns (PIL overlay, None) on success, (None, error_str) on failure.
     """
     try:
-        from pytorch_grad_cam import GradCAMPlusPlus, LayerCAM
+        from pytorch_grad_cam import GradCAM
         from pytorch_grad_cam.utils.image import show_cam_on_image
 
-        # Use the final feature projection used by the classifier.  It retains
-        # the spatial grid while matching the features seen by the fusion head.
-        modules = dict(model.cnn.named_modules())
-        target_layer = modules.get("conv4.pointwise") or modules.get("conv4.conv1")
+        # ── Find act4 (last activation before GAP) in legacy_xception ────────
+        # Walk named_modules to find the last activation layer reliably
+        target_layer = None
+        for name, mod in model.cnn.named_modules():
+            if name in ("act4", "bn4", "conv4"):
+                target_layer = mod
+                break          # act4 is preferred; break on first match
+
         if target_layer is None:
-            convolutional_layers = [
-                module for module in model.cnn.modules()
-                if isinstance(module, nn.Conv2d)
-            ]
-            target_layer = convolutional_layers[-1] if convolutional_layers else None
+            # Fallback: last non-container child of cnn
+            leaves = [m for m in model.cnn.modules()
+                      if len(list(m.children())) == 0]
+            target_layer = leaves[-1] if leaves else None
 
         if target_layer is None:
             return None, "Cannot find target conv layer in Xception backbone."
 
         # ── Wrapper so GradCAM sees the full pipeline ─────────────────────────
         class _Wrap(nn.Module):
-            def __init__(self, m):
-                super().__init__()
+            def _init_(self, m):
+                super()._init_()
                 self.m = m
             def forward(self, x):
-                if model_kind == "Bidirectional":
-                    cnn_tokens = self.m.cnn(x).flatten(2).transpose(1, 2)
-                    vit_tokens = self.m.vit.forward_features(x)[:, 1:, :]
-                    fused = self.m.fusion(cnn_tokens, vit_tokens)
-                    return self.m.classifier(fused).squeeze(1)
+                # Do not duplicate a particular fusion path here: checkpoints
+                # can be Gated or Bidirectional.  Calling the model itself
+                # preserves the exact inference path used for its prediction.
                 return self.m(x)
 
         wrapper   = _Wrap(model)
-        cam       = GradCAMPlusPlus(model=wrapper, target_layers=[target_layer])
+        cam       = GradCAM(model=wrapper, target_layers=[target_layer])
         # Grad-CAM passes each sample's scalar binary output to the target.
         targets   = [lambda output: output.squeeze()]
         grayscale = cam(input_tensor=tensor, targets=targets)[0]
-        if float(np.nan_to_num(grayscale).std()) < 1e-6:
-            fallback_cam = LayerCAM(model=wrapper, target_layers=[target_layer])
-            grayscale = fallback_cam(input_tensor=tensor, targets=targets)[0]
-        grayscale = np.nan_to_num(grayscale, nan=0.0, posinf=0.0, neginf=0.0)
-        lower, upper = np.percentile(grayscale, (2, 98))
-        if upper > lower:
-            grayscale = np.clip((grayscale - lower) / (upper - lower), 0.0, 1.0)
-        else:
-            grayscale = np.zeros_like(grayscale)
 
         # ── Overlay on resized original ───────────────────────────────────────
         rgb     = np.array(pil_image.resize((224, 224))).astype(np.float32) / 255.0
@@ -318,50 +311,102 @@ def get_gradcam(model, tensor, pil_image, model_kind):
 
 
 # ──────────────────────────────────────────────
+# ──────────────────────────────────────────────
 # IP GEOLOCATION
 # ──────────────────────────────────────────────
+@st.cache_data(ttl=3600)
 def get_location(ip: str):
     """
-    Returns location dict on success, or None if unavailable.
-    Uses ipapi.co (HTTPS, free, works on Streamlit Cloud).
+    Returns location dict on success, or fallback info.
+    Uses multi-provider fallback (ipapi.co -> freeipapi.com -> ip-api.com).
+    Cached for 1 hour to optimize performance.
     """
-    if not ip or ip in ("127.0.0.1", "localhost", "::1"):
-        return None   # no real IP — caller will skip location display
+    if not ip or ip in ("127.0.0.1", "localhost", "::1", "Unknown"):
+        return {
+            "city": "Localhost / Internal",
+            "regionName": "Local Network",
+            "country": "Local Machine",
+            "isp": "Loopback",
+        }
+
+    # Provider 1: ipapi.co (HTTPS)
     try:
         r = requests.get(
             f"https://ipapi.co/{ip}/json/",
             headers={"User-Agent": "deepfake-detector/1.0"},
-            timeout=5,
+            timeout=3,
         )
-        data = r.json()
-        if data.get("error"):
-            return None
-        return {
-            "city":       data.get("city", ""),
-            "regionName": data.get("region", ""),
-            "country":    data.get("country_name", ""),
-            "isp":        data.get("org", ""),
-        }
+        if r.status_code == 200:
+            data = r.json()
+            if not data.get("error"):
+                return {
+                    "city":       data.get("city") or "Unknown",
+                    "regionName": data.get("region") or "Unknown",
+                    "country":    data.get("country_name") or "Unknown",
+                    "isp":        data.get("org") or "Unknown",
+                }
     except Exception:
-        return None
+        pass
+
+    # Provider 2: freeipapi.com (HTTPS)
+    try:
+        r = requests.get(
+            f"https://freeipapi.com/api/json/{ip}",
+            headers={"User-Agent": "deepfake-detector/1.0"},
+            timeout=3,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            return {
+                "city":       data.get("cityName") or "Unknown",
+                "regionName": data.get("regionName") or "Unknown",
+                "country":    data.get("countryName") or "Unknown",
+                "isp":        data.get("asnOrganization") or "Unknown",
+            }
+    except Exception:
+        pass
+
+    # Provider 3: ip-api.com (HTTP)
+    try:
+        r = requests.get(
+            f"http://ip-api.com/json/{ip}",
+            headers={"User-Agent": "deepfake-detector/1.0"},
+            timeout=3,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("status") == "success":
+                return {
+                    "city":       data.get("city") or "Unknown",
+                    "regionName": data.get("regionName") or "Unknown",
+                    "country":    data.get("country") or "Unknown",
+                    "isp":        data.get("isp") or "Unknown",
+                }
+    except Exception:
+        pass
+
+    return {
+        "city":       "Unknown",
+        "regionName": "Unknown",
+        "country":    "Unknown",
+        "isp":        "Unknown",
+    }
 
 
 # ──────────────────────────────────────────────
 # JSON FILE LOGGING
 # ──────────────────────────────────────────────
 def get_uploader_ip() -> str:
-    """Get the client IP forwarded by a trusted reverse proxy.
-
-    Only use this after deploying behind Nginx and restricting Streamlit's
-    port 8501 to localhost. Otherwise forwarded headers can be forged.
-    """
+    """Resolve the uploader's real public IP automatically."""
     try:
-        forwarded = st.context.headers.get("X-Forwarded-For", "")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        return str(st.context.ip or "")
+        headers = getattr(st.context, "headers", {}) or {}
+        peer_ip = getattr(st.context, "ip", "") or ""
+        return resolve_uploader_ip(headers, peer_ip, trust_forwarded_headers=True)
     except Exception:
-        return ""
+        try:
+            return resolve_uploader_ip({}, "", trust_forwarded_headers=True)
+        except Exception:
+            return "127.0.0.1"
 
 
 LOG_PATH = ROOT / "forensic_log.json"
@@ -390,16 +435,17 @@ def save_log(data: list):
 
 
 def log_detection(ip: str, loc: dict, confidence: float,
-                  image_hash: str, filename: str):
+                  image_hash: str, filename: str, verdict: str = "FAKE"):
     """Append a new detection entry to the JSON log."""
     data = load_log()
     entry = {
         "timestamp":  datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ip_address": ip,
-        "city":       loc.get("city", "Unknown"),
-        "region":     loc.get("regionName", "Unknown"),
-        "country":    loc.get("country", "Unknown"),
-        "isp":        loc.get("isp", "Unknown"),
+        "verdict":    verdict,
+        "ip_address": ip or "Unknown",
+        "city":       loc.get("city") or "Unknown",
+        "region":     loc.get("regionName") or loc.get("region") or "Unknown",
+        "country":    loc.get("country") or "Unknown",
+        "isp":        loc.get("isp") or "Unknown",
         "confidence": round(confidence * 100, 2),
         "image_hash": image_hash,
         "filename":   filename,
@@ -408,15 +454,21 @@ def log_detection(ip: str, loc: dict, confidence: float,
     save_log(data)
 
 
-def fetch_log(limit: int = 20) -> list:
+def fetch_log(limit: int = 25) -> list:
     """Return last N detections as list of tuples (for table display)."""
     data = load_log()
     recent = data[-limit:][::-1]  # last N, newest first
     return [
         (
-            d["timestamp"], d["ip_address"], d["city"],
-            d["country"],   d["isp"],        d["confidence"],
-            d["filename"],  d["image_hash"],
+            d.get("timestamp", ""),
+            d.get("verdict", "FAKE"),
+            d.get("ip_address") or "Unknown",
+            d.get("city", "Unknown"),
+            d.get("country", "Unknown"),
+            d.get("isp", "Unknown"),
+            d.get("confidence", 0.0),
+            d.get("filename", "Unknown"),
+            d.get("image_hash", ""),
         )
         for d in recent
     ]
@@ -439,34 +491,39 @@ st.sidebar.markdown("## 🔍 DeepFake Detector")
 st.sidebar.caption("Xception + ViT-B/16 · checkpoint-matched fusion · FF++")
 st.sidebar.divider()
 
-# IP Source — only Demo or Auto (no manual entry)
-st.sidebar.markdown("**Uploader Identification**")
+# IP Source — Auto-detect as default, Demo Mode as optional
+st.sidebar.markdown("*Uploader Identification*")
 ip_mode = st.sidebar.radio(
     "Mode",
-    ["Demo Mode", "Auto-detect"],
+    ["Auto-detect (Real Public IP)", "Demo Mode (Simulated IP)"],
+    index=0,
     label_visibility="collapsed",
-    help="Demo Mode uses a simulated IP for presentation."
+    help="Auto-detect captures the uploader's real public IP address automatically. Demo mode allows selecting simulated IPs."
 )
 
-if ip_mode == "Auto-detect":
-    demo_ip = st_javascript("""
-        await fetch("https://api64.ipify.org?format=json")
-            .then(response => response.json())
-            .then(data => data.ip)
-    """)
-    demo_ip = demo_ip or get_uploader_ip()
-    st.sidebar.caption(f"Detected IP: {demo_ip or 'Waiting...'}")
+if ip_mode == "Auto-detect (Real Public IP)":
+    uploader_ip = get_uploader_ip()
+    st.sidebar.markdown(f"🟢 *Live IP:* {uploader_ip}")
+    loc_sidebar = get_location(uploader_ip)
+    if loc_sidebar and loc_sidebar.get("city") and loc_sidebar.get("city") != "Unknown":
+        st.sidebar.caption(f"📍 {loc_sidebar.get('city')}, {loc_sidebar.get('country')}")
 else:
-    demo_ip = st.sidebar.selectbox(
+    sim_selection = st.sidebar.selectbox(
         "Simulated Region",
         [
             "103.45.67.89  — Mumbai",
             "49.36.122.5   — Delhi",
             "117.96.0.1    — Bengaluru",
             "182.68.15.10  — Chennai",
+            "Custom IP...",
         ],
         label_visibility="collapsed",
-    ).split()[0]   # extract IP only
+    )
+    if sim_selection == "Custom IP...":
+        uploader_ip = st.sidebar.text_input("Enter IP:", "8.8.8.8").strip()
+    else:
+        uploader_ip = sim_selection.split()[0]
+    st.sidebar.caption(f"🎭 Using simulated IP: {uploader_ip}")
 
 st.sidebar.divider()
 st.sidebar.caption("M.Tech Project · Enhanced Deepfake Detection Framework")
@@ -542,6 +599,28 @@ with col_right:
             img_bytes  = uploaded_file.getvalue()
             image_hash = hashlib.sha256(img_bytes).hexdigest()
 
+        # Geolocation lookup for uploader IP
+        location = get_location(uploader_ip)
+
+        # Log detection to database (both REAL and FAKE submissions)
+        log_detection(
+            ip=uploader_ip,
+            loc=location or {},
+            confidence=confidence,
+            image_hash=image_hash,
+            filename=uploaded_file.name,
+            verdict=label
+        )
+
+        # Build location rows if available
+        loc_rows = ""
+        if location and location.get("city") != "Unknown":
+            loc_rows = f"""
+| City | {location.get('city', '—')} |
+| Region | {location.get('regionName', '—')} |
+| Country | {location.get('country', '—')} |
+| ISP | {location.get('isp', '—')} |"""
+
         # ── RESULT DISPLAY ──
         if label == "FAKE":
             st.markdown("""
@@ -558,70 +637,66 @@ with col_right:
 
             st.progress(float(confidence), text=f"Manipulation probability: {confidence:.1%}")
 
-            # Get geolocation silently
-            location = get_location(demo_ip)
-
-            # Log to DB
-            log_detection(
-                ip=demo_ip,
-                loc=location or {},
-                confidence=confidence,
-                image_hash=image_hash,
-                filename=uploaded_file.name
-            )
-
             # Forensic Evidence Panel
             st.markdown("---")
             st.markdown(
                 '<span class="badge-logged">● Evidence Recorded</span>',
                 unsafe_allow_html=True
             )
-            st.markdown("**Forensic Source Attribution**")
-
-            # Build location rows only if available
-            loc_rows = ""
-            if location:
-                loc_rows = f"""
-| City | {location.get('city', '—')} |
-| Region | {location.get('regionName', '—')} |
-| Country | {location.get('country', '—')} |
-| ISP | {location.get('isp', '—')} |"""
+            st.markdown("*Forensic Source Attribution*")
 
             st.markdown(f"""
 | Attribute | Value |
 |:----------|:------|
-| IP Address | `{demo_ip}` |{loc_rows}
+| Verdict | 🚨 DEEPFAKE (Manipulated) |
+| IP Address | {uploader_ip} |{loc_rows}
 | Timestamp | {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} |
-| Image Fingerprint | `{image_hash[:32]}...` |
-| Filename | `{uploaded_file.name}` |
+| Image Fingerprint | {image_hash[:32]}... |
+| Filename | {uploaded_file.name} |
             """)
 
         else:
             st.markdown("""
             <div class="real-box">
-                <h2>AUTHENTIC — No Manipulation Detected</h2>
+                <h2>✅ AUTHENTIC — No Manipulation Detected</h2>
             </div>
             """, unsafe_allow_html=True)
 
             m1, m2 = st.columns(2)
             m1.metric("Authenticity Score", f"{confidence:.1%}")
-            m2.metric("Forensic Record", "Not Created")
+            m2.metric("Forensic Record", "Recorded ✅")
 
             st.caption(f"Fake probability: {fake_probability:.4%} · Evaluation mode: full image (no face crop)")
 
             st.progress(float(confidence), text=f"Authenticity confidence: {confidence:.1%}")
 
-            st.caption("Image passed forensic verification. No record created.")
+            # Forensic Verification Panel
+            st.markdown("---")
+            st.markdown(
+                '<span class="badge-logged" style="background:#0e2a18; border-color:#2e7d32; color:#81c784;">● Verification Recorded</span>',
+                unsafe_allow_html=True
+            )
+            st.markdown("*Forensic Source Attribution & Verification*")
+
+            st.markdown(f"""
+| Attribute | Value |
+|:----------|:------|
+| Verdict | ✅ AUTHENTIC (Genuine) |
+| IP Address | {uploader_ip} |{loc_rows}
+| Timestamp | {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} |
+| Image Fingerprint | {image_hash[:32]}... |
+| Filename | {uploaded_file.name} |
+            """)
 
     elif not uploaded_file:
         st.markdown("""
-        *Upload an image to begin analysis.*
+        Upload an image to begin analysis.
 
-        **How it works:**
+        *How it works:*
         1. Upload any face image
         2. Dual-branch model analyses spatial & semantic features
-        3. Manipulated images trigger forensic source attribution
-        4. All evidence is timestamped and hash-verified
+        3. Real public IP & geolocation automatically identified for all submissions
+        4. Complete forensic audit trail recorded with cryptographic hash
         """)
 
 # ── GRAD-CAM — full width below both columns, FAKE detections only ──────────
@@ -633,7 +708,7 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
         "🔴 Red = high attention  ·  🔵 Blue = ignored region."
     )
     with st.spinner("Generating Grad-CAM heatmap..."):
-        heatmap, cam_error = get_gradcam(model, img_tensor, image, model_kind)
+        heatmap, cam_error = get_gradcam(model, img_tensor, image)
 
     if heatmap is not None:
         g1, g2 = st.columns(2)
@@ -651,7 +726,7 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
             "skin texture (NeuralTextures)."
         )
     else:
-        st.warning(f"⚠️ Grad-CAM could not be generated. Reason: `{cam_error}`")
+        st.warning(f"⚠️ Grad-CAM could not be generated. Reason: {cam_error}")
 
 # ──────────────────────────────────────────────
 # FORENSIC LOG TABLE
@@ -659,8 +734,8 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
 st.divider()
 st.subheader("📋 Forensic Detection Log")
 st.caption(
-    "All deepfake detections are automatically logged here. "
-    "This log can be exported as evidence for investigation."
+    "All image submissions (Deepfake and Authentic) are automatically logged with uploader network attribution. "
+    "This log can be exported as forensic evidence for verification and cybercrime investigation."
 )
 
 log_rows = fetch_log(limit=25)
@@ -668,7 +743,7 @@ log_rows = fetch_log(limit=25)
 if log_rows:
     import pandas as pd
     df = pd.DataFrame(log_rows, columns=[
-        "Timestamp", "IP Address", "City", "Country",
+        "Timestamp", "Verdict", "IP Address", "City", "Country",
         "ISP", "Confidence (%)", "Filename", "Image Hash"
     ])
     df["Image Hash"] = df["Image Hash"].str[:16] + "..."
@@ -678,8 +753,12 @@ if log_rows:
         use_container_width=True,
         hide_index=True,
         column_config={
+            "Verdict": st.column_config.TextColumn(
+                "Verdict",
+                help="Prediction verdict: FAKE (Manipulated) or REAL (Authentic)"
+            ),
             "Confidence (%)": st.column_config.ProgressColumn(
-                "Confidence (%)", min_value=50, max_value=100
+                "Confidence (%)", min_value=0, max_value=100
             )
         }
     )
