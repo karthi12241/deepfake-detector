@@ -1,4 +1,4 @@
-# Comprehensive System Guide: Deepfake Detection, Network Forensics & Explainable AI (Grad-CAM)
+# Comprehensive System Guide: Deepfake Detection, Cryptographic Verification & Explainable AI (Grad-CAM)
 
 This document is a complete, beginner-friendly, and technically rigorous guide to understand how every part of this deepfake detection and digital forensics system works. It is structured so that you can study and explain any component during a project review, exam, or thesis defense.
 
@@ -6,15 +6,14 @@ This document is a complete, beginner-friendly, and technically rigorous guide t
 
 ## 1. System at a Glance (The Big Picture)
 
-When a user uploads a face image to the Streamlit web application (`app.py`), the system executes a 4-step pipeline:
+When a user uploads a face image to the Streamlit web application (`app.py`), the system executes a 3-step pipeline:
 
 ```
 [1. User Uploads Image]
           │
-          ├──► [Step 2: Network Forensic Capture]
-          │      • Client-side WebRTC STUN discovers real public IP.
-          │      • Multi-provider geolocation (City, Region, Country, ISP).
-          │      • SHA-256 cryptographic image hashing.
+          ├──► [Step 2: Cryptographic Verification & Audit Logging]
+          │      • SHA-256 cryptographic image fingerprinting.
+          │      • Tamper-evident hash generation from raw image bytes.
           │      • Appended to forensic_log.json audit trail.
           │
           ├──► [Step 3: Deepfake Neural Network Inference]
@@ -29,7 +28,7 @@ When a user uploads a face image to the Streamlit web application (`app.py`), th
                  • Targets Xception's final spatial representation (model.cnn.act4).
                  • Computes backward gradients from the scalar FAKE logit.
                  • Generates heatmaps (Warm = positive contribution to FAKE).
-                 • Full 5-metric mathematical diagnostics shown in UI.
+                 • Robust min-max normalization with transparent zero-CAM messaging.
 ```
 
 ---
@@ -57,50 +56,32 @@ Instead of simply concatenating the features, the model uses an adaptive gating 
 
 ### 2.3 Single Scalar Logit & Classification
 - Unlike standard models that output 2 numbers `[logit_real, logit_fake]`, this model outputs **one single scalar number** ($y \in \mathbb{R}$):
-  $$\text{Probability} = \sigma(y) = \frac{1}{1 + e^{-y}}$$
+   $$\text{Probability} = \sigma(y) = \frac{1}{1 + e^{-y}}$$
 - If $\text{Probability} \ge 0.5$, verdict is **FAKE**.
 - If $\text{Probability} < 0.5$, verdict is **REAL**.
 - **Why this matters for Grad-CAM:** There is no "class index 1". The single output scalar $y$ directly represents evidence for the FAKE class.
 
 ---
 
-## 3. Public IP Detection & Network Forensics (`ip_utils.py`)
+## 3. Cryptographic Image Verification & Audit Trail (`forensic_log.json`)
 
-### 3.1 The Problem: Why Dallas Appeared on Streamlit Cloud
-When deployed on Streamlit Community Cloud (hosted on AWS/Snowflake infrastructure in Dallas, Texas), the old implementation fell back to `fetch_external_public_ip()` whenever a client IP was missing.
-- `fetch_external_public_ip()` called `api.ipify.org` **from inside the Streamlit Cloud container**.
-- Ipify therefore saw the outbound public IP of the **Streamlit Cloud server container** in Dallas, Texas!
-- The app incorrectly logged the server's Dallas IP as the visitor's IP.
+### 3.1 Tamper-Evident SHA-256 Fingerprinting
+In digital forensics and legal evidentiary chains, proving that an analyzed image has not been altered or substituted is paramount.
+- Every uploaded image has its exact raw binary byte sequence digested using the cryptographic SHA-256 algorithm:
+  $$\text{Fingerprint} = \text{SHA256}(\text{ImageBytes})$$
+- Because cryptographic hash functions possess the *avalanche effect*, modifying even a single pixel or byte flips approximately 50% of the output bits, producing a completely different hash string.
+- This creates an immutable digital fingerprint identifying the exact submitted artifact.
 
-### 3.2 The Fix: Pure Request Header Inspection & Zero Server Fallback
-In `ip_utils.py` and `app.py`:
-1. **Server-side fallback disabled:** In cloud deployments, `fetch_external_public_ip()` is strictly prohibited from running. If no genuine visitor IP is in the request headers, the app reports `Unavailable (Not exposed by hosting platform)`.
-2. **Reverse Proxy & CDN Header Priority:**
-   - **`CF-Connecting-IP` (Highest Priority):** Authoritative header set by Cloudflare edge. Cloudflare strips any user-supplied `CF-Connecting-IP` and sets it to the real client IP.
-   - **`True-Client-IP`:** Set by Cloudflare Enterprise / Akamai.
-   - **`X-Real-IP`:** Set by reverse proxies (e.g. Nginx, Envoy).
-   - **`X-Forwarded-For`:** Parsed left-to-right to find the first globally routable, non-private public IP address.
-   - **`st.context.ip` / `peer_ip`:** Evaluated only if it is a globally routable public IP (private cluster IPs like `10.x.x.x` are rejected).
-3. **If Headers Are Not Forwarded:** The application transparently logs `Unavailable (Not exposed by hosting platform)` and skips external geolocation to preserve forensic integrity.
+### 3.2 Audit Log Structure
+Every submission (both FAKE and REAL) is appended to `forensic_log.json`:
+- **Timestamp:** Exact date and time of analysis (`YYYY-MM-DD HH:MM:SS`).
+- **Verdict:** Model classification (`FAKE` or `REAL`).
+- **Confidence:** Percentage confidence score (e.g. `97.5%`).
+- **Image Hash:** Full 64-character SHA-256 hexadecimal digest.
+- **Filename:** Original uploaded file name.
 
-### 3.3 Geolocation Resolution & Caching
-Once a genuine public IP is captured, `get_location(ip)` resolves physical attribution:
-- Uses multi-provider fallback:
-  1. `ipapi.co` (Primary)
-  2. `freeipapi.com` (Secondary)
-  3. `ip-api.com` (Tertiary)
-- Extracts: **City, Region/State, Country, ISP / Autonomous System (AS)**.
-- If `ip` is `Unavailable` or `127.0.0.1`, external geolocation queries are bypassed.
-- **Performance Optimization:** Wrapped with `@st.cache_data(ttl=3600)` so repeated submissions from the same IP don't spam external APIs.
-
-### 3.4 Cryptographic Audit Trail (`forensic_log.json`)
-Every submission (both FAKE and REAL) is permanently logged:
-- **Timestamp:** Exact UTC date and time.
-- **Verdict & Confidence:** E.g., `FAKE (97.48%)`.
-- **Image Fingerprint (SHA-256):** A 64-character cryptographic hash computed from the raw image bytes:
-  $$\text{Hash} = \text{SHA256}(\text{ImageBytes})$$
-  Ensures the evidence is tamper-evident: changing even 1 pixel alters the hash completely.
-- **Uploader Metadata:** Filename, IP address, City, Country, ISP.
+### 3.3 CSV Export for Reporting
+The application displays the most recent 25 detection records in an interactive table and provides an instant one-click CSV export button (`⬇️ Export Log as CSV`) for forensic reporting and documentation.
 
 ---
 
@@ -183,7 +164,7 @@ If $S_{i,j} < 0$, that region contains features that **reduced** the FAKE score 
 ### 5.1 Syntax and Compilation Verification
 To verify that all Python modules compile cleanly without syntax errors:
 ```bash
-python3 -m py_compile app.py ip_utils.py
+python3 -m py_compile app.py test.py
 ```
 *(Exit code 0 confirms clean compilation).*
 
@@ -235,5 +216,5 @@ To run the Streamlit forensic application:
 **Q4: Does a red region on Grad-CAM prove that those specific pixels were swapped?**  
 *Answer:* No. Grad-CAM is a model attribution method that visualizes which spatial feature regions positively influenced the model's decision. It is not pixel-level ground-truth segmentation. The UI explicitly includes this disclaimer.
 
-**Q5: How is user privacy handled with IP logging?**  
-*Answer:* Only public network routing IP and city/country-level geolocation are logged for forensic provenance. No private local files or internal intranet IP addresses are stored. All evidence entries are cryptographically linked using SHA-256 hashes.
+**Q5: How is evidentiary integrity ensured without IP tracking?**  
+*Answer:* Evidentiary integrity is guaranteed cryptographically using SHA-256 digital fingerprinting. Every uploaded image's raw byte payload is hashed to produce an immutable 64-character fingerprint logged alongside detection verdicts, confidence percentages, and timestamps in `forensic_log.json`. This provides tamper-evident proof of exactly which image was evaluated.

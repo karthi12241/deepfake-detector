@@ -1,6 +1,6 @@
 """
 =============================================================
-  DeepFake Detection System — Forensic Source Attribution
+  DeepFake Detection System — Forensic Image Analysis
   M.Tech Project: Enhanced Deepfake Detection
   Model: Xception + ViT-B/16 with Gated Feature Fusion
   Run: streamlit run demo_app.py
@@ -58,7 +58,6 @@ from PIL import Image
 import json
 import datetime
 import hashlib
-import requests
 import numpy as np
 import cv2
 
@@ -66,7 +65,6 @@ import cv2
 # inspect the checkpoint to select the correct fusion architecture and use the
 # checkpoint's recorded image size.
 from test import build_model, make_transform, unpack_checkpoint
-from ip_utils import get_uploader_ip as resolve_uploader_ip, get_ip_diagnostics
 
 ROOT = Path(__file__).resolve().parent
 
@@ -473,108 +471,8 @@ def get_gradcam(model, tensor, pil_image):
 
 
 # ──────────────────────────────────────────────
-# ──────────────────────────────────────────────
-# IP GEOLOCATION
-# ──────────────────────────────────────────────
-@st.cache_data(ttl=3600)
-def get_location(ip: str):
-    """
-    Returns location dict on success, or fallback info.
-    Uses multi-provider fallback (ipapi.co -> freeipapi.com -> ip-api.com).
-    Cached for 1 hour to optimize performance.
-    """
-    if not ip or ip.startswith("Unavailable") or ip in ("127.0.0.1", "localhost", "::1", "Unknown"):
-        if not ip or ip.startswith("Unavailable"):
-            return {
-                "city": "Unavailable",
-                "regionName": "Not exposed by hosting platform",
-                "country": "Unknown",
-                "isp": "N/A (Streamlit Cloud proxy limitation)",
-            }
-        return {
-            "city": "Localhost / Internal",
-            "regionName": "Local Network",
-            "country": "Local Machine",
-            "isp": "Loopback",
-        }
-
-    # Provider 1: ipapi.co (HTTPS)
-    try:
-        r = requests.get(
-            f"https://ipapi.co/{ip}/json/",
-            headers={"User-Agent": "deepfake-detector/1.0"},
-            timeout=3,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            if not data.get("error"):
-                return {
-                    "city":       data.get("city") or "Unknown",
-                    "regionName": data.get("region") or "Unknown",
-                    "country":    data.get("country_name") or "Unknown",
-                    "isp":        data.get("org") or "Unknown",
-                }
-    except Exception:
-        pass
-
-    # Provider 2: freeipapi.com (HTTPS)
-    try:
-        r = requests.get(
-            f"https://freeipapi.com/api/json/{ip}",
-            headers={"User-Agent": "deepfake-detector/1.0"},
-            timeout=3,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            return {
-                "city":       data.get("cityName") or "Unknown",
-                "regionName": data.get("regionName") or "Unknown",
-                "country":    data.get("countryName") or "Unknown",
-                "isp":        data.get("asnOrganization") or "Unknown",
-            }
-    except Exception:
-        pass
-
-    # Provider 3: ip-api.com (HTTP)
-    try:
-        r = requests.get(
-            f"http://ip-api.com/json/{ip}",
-            headers={"User-Agent": "deepfake-detector/1.0"},
-            timeout=3,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            if data.get("status") == "success":
-                return {
-                    "city":       data.get("city") or "Unknown",
-                    "regionName": data.get("regionName") or "Unknown",
-                    "country":    data.get("country") or "Unknown",
-                    "isp":        data.get("isp") or "Unknown",
-                }
-    except Exception:
-        pass
-
-    return {
-        "city":       "Unknown",
-        "regionName": "Unknown",
-        "country":    "Unknown",
-        "isp":        "Unknown",
-    }
-
-
-# ──────────────────────────────────────────────
 # JSON FILE LOGGING
 # ──────────────────────────────────────────────
-def get_uploader_ip() -> str:
-    """Resolve the uploader's real public IP automatically."""
-    try:
-        headers = getattr(st.context, "headers", {}) or {}
-        peer_ip = getattr(st.context, "ip", "") or ""
-        return resolve_uploader_ip(headers, peer_ip, trust_forwarded_headers=True, allow_local_dev_fallback=False)
-    except Exception:
-        return "Unavailable (Not exposed by hosting platform)"
-
-
 LOG_PATH = ROOT / "forensic_log.json"
 
 
@@ -600,18 +498,12 @@ def save_log(data: list):
         json.dump(data, f, indent=2)
 
 
-def log_detection(ip: str, loc: dict, confidence: float,
-                  image_hash: str, filename: str, verdict: str = "FAKE"):
+def log_detection(confidence: float, image_hash: str, filename: str, verdict: str = "FAKE"):
     """Append a new detection entry to the JSON log."""
     data = load_log()
     entry = {
         "timestamp":  datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "verdict":    verdict,
-        "ip_address": ip or "Unknown",
-        "city":       loc.get("city") or "Unknown",
-        "region":     loc.get("regionName") or loc.get("region") or "Unknown",
-        "country":    loc.get("country") or "Unknown",
-        "isp":        loc.get("isp") or "Unknown",
         "confidence": round(confidence * 100, 2),
         "image_hash": image_hash,
         "filename":   filename,
@@ -628,10 +520,6 @@ def fetch_log(limit: int = 25) -> list:
         (
             d.get("timestamp", ""),
             d.get("verdict", "FAKE"),
-            d.get("ip_address") or "Unknown",
-            d.get("city", "Unknown"),
-            d.get("country", "Unknown"),
-            d.get("isp", "Unknown"),
             d.get("confidence", 0.0),
             d.get("filename", "Unknown"),
             d.get("image_hash", ""),
@@ -655,60 +543,6 @@ init_db()
 # ──────────────────────────────────────────────
 st.sidebar.markdown("## 🔍 DeepFake Detector")
 st.sidebar.caption("Xception + ViT-B/16 · checkpoint-matched fusion · FF++")
-st.sidebar.divider()
-
-# IP Source — Auto-detect as default, Demo Mode as optional
-st.sidebar.markdown("**Uploader Identification**")
-ip_mode = st.sidebar.radio(
-    "Mode",
-    ["Auto-detect (Real Public IP)", "Demo Mode (Simulated IP)"],
-    index=0,
-    label_visibility="collapsed",
-    help="Auto-detect captures the uploader's real public IP address automatically. Demo mode allows selecting simulated IPs."
-)
-
-if ip_mode == "Auto-detect (Real Public IP)":
-    uploader_ip = get_uploader_ip()
-    if uploader_ip.startswith("Unavailable"):
-        st.sidebar.markdown("⚠️ **IP:** `Not exposed by platform`")
-        st.sidebar.caption("Streamlit Cloud ingress proxy did not forward client IP.")
-    else:
-        st.sidebar.markdown(f"🟢 **Live IP:** `{uploader_ip}`")
-        loc_sidebar = get_location(uploader_ip)
-        if loc_sidebar and loc_sidebar.get("city") and loc_sidebar.get("city") not in ("Unknown", "Unavailable"):
-            st.sidebar.caption(f"📍 {loc_sidebar.get('city')}, {loc_sidebar.get('country')}")
-
-    # Temporary testing diagnostics for deployment verification
-    with st.sidebar.expander("🔍 Network IP Diagnostics (Testing)", expanded=False):
-        ip_diag = get_ip_diagnostics(getattr(st.context, "headers", {}) or {}, getattr(st.context, "ip", "") or "")
-        st.write(f"**st.context.ip:** `{ip_diag['peer_ip_raw']}`")
-        st.write(f"**Environment:** `{ip_diag['environment']}`")
-        st.write(f"**Resolution Source:** `{ip_diag['resolution_source']}`")
-        st.write(f"**Resolved IP:** `{ip_diag['final_resolved_ip']}`")
-        st.caption("Forwarded Headers (Sanitized):")
-        if ip_diag["relevant_headers"]:
-            for k, v in ip_diag["relevant_headers"].items():
-                st.text(f"{k}: {v}")
-        else:
-            st.caption("None present in request context")
-else:
-    sim_selection = st.sidebar.selectbox(
-        "Simulated Region",
-        [
-            "103.45.67.89  — Mumbai",
-            "49.36.122.5   — Delhi",
-            "117.96.0.1    — Bengaluru",
-            "182.68.15.10  — Chennai",
-            "Custom IP...",
-        ],
-        label_visibility="collapsed",
-    )
-    if sim_selection == "Custom IP...":
-        uploader_ip = st.sidebar.text_input("Enter IP:", "8.8.8.8").strip()
-    else:
-        uploader_ip = sim_selection.split()[0]
-    st.sidebar.caption(f"🎭 Using simulated IP: `{uploader_ip}`")
-
 st.sidebar.divider()
 st.sidebar.caption("M.Tech Project · Enhanced Deepfake Detection Framework")
 
@@ -783,31 +617,13 @@ with col_right:
             img_bytes  = uploaded_file.getvalue()
             image_hash = hashlib.sha256(img_bytes).hexdigest()
 
-        # Geolocation lookup for uploader IP
-        location = get_location(uploader_ip)
-
         # Log detection to database (both REAL and FAKE submissions)
         log_detection(
-            ip=uploader_ip,
-            loc=location or {},
             confidence=confidence,
             image_hash=image_hash,
             filename=uploaded_file.name,
             verdict=label
         )
-
-        # Build location rows if available
-        loc_rows = ""
-        if location and location.get("city") not in ("Unknown", "Unavailable"):
-            loc_rows = f"""
-| City | {location.get('city', '—')} |
-| Region | {location.get('regionName', '—')} |
-| Country | {location.get('country', '—')} |
-| ISP | {location.get('isp', '—')} |"""
-        elif location and location.get("city") == "Unavailable":
-            loc_rows = """
-| Geolocation | `Not Available (Proxy / Cloud Limitation)` |
-| Note | `Streamlit Cloud proxy did not forward client IP` |"""
 
         # ── RESULT DISPLAY ──
         if label == "FAKE":
@@ -831,13 +647,12 @@ with col_right:
                 '<span class="badge-logged">● Evidence Recorded</span>',
                 unsafe_allow_html=True
             )
-            st.markdown("**Forensic Source Attribution**")
+            st.markdown("**Forensic Audit Record**")
 
             st.markdown(f"""
 | Attribute | Value |
 |:----------|:------|
 | Verdict | `🚨 DEEPFAKE (Manipulated)` |
-| IP Address | `{uploader_ip}` |{loc_rows}
 | Timestamp | {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} |
 | Image Fingerprint | `{image_hash[:32]}...` |
 | Filename | `{uploaded_file.name}` |
@@ -864,13 +679,12 @@ with col_right:
                 '<span class="badge-logged" style="background:#0e2a18; border-color:#2e7d32; color:#81c784;">● Verification Recorded</span>',
                 unsafe_allow_html=True
             )
-            st.markdown("**Forensic Source Attribution & Verification**")
+            st.markdown("**Forensic Verification & Audit Record**")
 
             st.markdown(f"""
 | Attribute | Value |
 |:----------|:------|
 | Verdict | `✅ AUTHENTIC (Genuine)` |
-| IP Address | `{uploader_ip}` |{loc_rows}
 | Timestamp | {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} |
 | Image Fingerprint | `{image_hash[:32]}...` |
 | Filename | `{uploaded_file.name}` |
@@ -883,7 +697,7 @@ with col_right:
         **How it works:**
         1. Upload any face image
         2. Dual-branch model analyses spatial & semantic features
-        3. Real public IP & geolocation automatically identified for all submissions
+        3. Explainable AI (Grad-CAM) localizes manipulated regions for deepfakes
         4. Complete forensic audit trail recorded with cryptographic hash
         """)
 
@@ -952,8 +766,8 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
 st.divider()
 st.subheader("📋 Forensic Detection Log")
 st.caption(
-    "All image submissions (Deepfake and Authentic) are automatically logged with uploader network attribution. "
-    "This log can be exported as forensic evidence for verification and cybercrime investigation."
+    "All image submissions (Deepfake and Authentic) are automatically logged with cryptographic hashes. "
+    "This log can be exported as forensic evidence for verification and audit trails."
 )
 
 log_rows = fetch_log(limit=25)
@@ -961,8 +775,7 @@ log_rows = fetch_log(limit=25)
 if log_rows:
     import pandas as pd
     df = pd.DataFrame(log_rows, columns=[
-        "Timestamp", "Verdict", "IP Address", "City", "Country",
-        "ISP", "Confidence (%)", "Filename", "Image Hash"
+        "Timestamp", "Verdict", "Confidence (%)", "Filename", "Image Hash"
     ])
     df["Image Hash"] = df["Image Hash"].str[:16] + "..."
 
