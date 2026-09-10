@@ -80,29 +80,61 @@ except Exception as error:
     st.error(f"Unable to obtain the model checkpoint: {error}")
     st.stop()
 
-# Custom CSS for better UI
+# Custom CSS — professional business styling
 st.markdown("""
 <style>
+    /* Result cards */
     .fake-box {
-        background-color: #ff4b4b22;
-        border: 2px solid #ff4b4b;
-        border-radius: 10px;
-        padding: 20px;
-        margin: 10px 0;
-    }
-    .real-box {
-        background-color: #00c85322;
-        border: 2px solid #00c853;
-        border-radius: 10px;
-        padding: 20px;
-        margin: 10px 0;
-    }
-    .forensic-box {
-        background-color: #1e1e2e;
-        border: 1px solid #444;
+        background: linear-gradient(135deg, #1a0a0a 0%, #2d0f0f 100%);
+        border-left: 4px solid #e53935;
         border-radius: 8px;
-        padding: 15px;
-        font-family: monospace;
+        padding: 18px 22px;
+        margin: 10px 0;
+    }
+    .fake-box h2 { color: #ef5350; font-size: 1.4rem; margin: 0; letter-spacing: 0.5px; }
+
+    .real-box {
+        background: linear-gradient(135deg, #0a1a0e 0%, #0f2d18 100%);
+        border-left: 4px solid #2e7d32;
+        border-radius: 8px;
+        padding: 18px 22px;
+        margin: 10px 0;
+    }
+    .real-box h2 { color: #43a047; font-size: 1.4rem; margin: 0; letter-spacing: 0.5px; }
+
+    /* Forensic evidence card */
+    .forensic-card {
+        background: #0e1117;
+        border: 1px solid #2a2a3a;
+        border-radius: 8px;
+        padding: 16px 20px;
+        margin: 12px 0;
+    }
+
+    /* Badge */
+    .badge-logged {
+        display: inline-block;
+        background: #1a2332;
+        border: 1px solid #1e3a5f;
+        color: #4fc3f7;
+        border-radius: 4px;
+        padding: 4px 10px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+    }
+
+    /* Sidebar cleanup */
+    section[data-testid="stSidebar"] { background: #0d1117; }
+    section[data-testid="stSidebar"] .stRadio label { font-size: 0.9rem; }
+
+    /* Metric cards */
+    [data-testid="stMetric"] {
+        background: #0e1117;
+        border: 1px solid #1e2432;
+        border-radius: 8px;
+        padding: 12px 16px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -218,76 +250,81 @@ def predict(model, image: Image.Image):
 # ──────────────────────────────────────────────
 def get_gradcam(model, tensor, pil_image):
     """
-    Generate Grad-CAM heatmap on Xception's last conv block.
-    Target layer: model.cnn (output before mean-pool) → act4.
-    Returns PIL Image with heatmap overlay, or None on failure.
+    Grad-CAM on Xception's last conv activation (act4).
+    Returns (PIL overlay, None) on success, (None, error_str) on failure.
     """
     try:
         from pytorch_grad_cam import GradCAM
         from pytorch_grad_cam.utils.image import show_cam_on_image
 
-        # Find target layer — Xception's last spatial feature map
-        try:
-            target_layer = model.cnn.act4          # timm legacy_xception
-        except AttributeError:
-            target_layer = list(model.cnn.children())[-1]
+        # ── Find act4 (last activation before GAP) in legacy_xception ────────
+        # Walk named_modules to find the last activation layer reliably
+        target_layer = None
+        for name, mod in model.cnn.named_modules():
+            if name in ("act4", "bn4", "conv4"):
+                target_layer = mod
+                break          # act4 is preferred; break on first match
 
-        # GradCAM needs a wrapper that returns 2-D output
-        # We hook into the CNN branch only
-        class _CNNWrapper(nn.Module):
-            def __init__(self, m): super().__init__(); self.m = m
+        if target_layer is None:
+            # Fallback: last non-container child of cnn
+            leaves = [m for m in model.cnn.modules()
+                      if len(list(m.children())) == 0]
+            target_layer = leaves[-1] if leaves else None
+
+        if target_layer is None:
+            return None, "Cannot find target conv layer in Xception backbone."
+
+        # ── Wrapper so GradCAM sees the full pipeline ─────────────────────────
+        class _Wrap(nn.Module):
+            def __init__(self, m):
+                super().__init__()
+                self.m = m
             def forward(self, x):
-                cnn_f = self.m.cnn(x).mean(dim=(2, 3))
-                vit_f = self.m.vit.forward_features(x)[:, 0, :]
+                cnn_f = self.m.cnn(x).mean(dim=(2, 3))      # [B, 2048]
+                vit_f = self.m.vit.forward_features(x)[:, 0, :]  # [B, 768]
                 fused = self.m.fusion(cnn_f, vit_f)
-                return self.m.classifier(fused)   # [B, 1]
+                return self.m.classifier(fused).squeeze(1)   # [B]  ← GradCAM needs 1-D
 
-        wrapper = _CNNWrapper(model)
+        wrapper   = _Wrap(model)
+        cam       = GradCAM(model=wrapper, target_layers=[target_layer])
+        grayscale = cam(input_tensor=tensor)[0]              # [H, W] in [0,1]
 
-        # Re-target to cnn.act4 inside wrapper
-        try:
-            cam_target = wrapper.m.cnn.act4
-        except AttributeError:
-            cam_target = list(wrapper.m.cnn.children())[-1]
+        # ── Overlay on resized original ───────────────────────────────────────
+        rgb     = np.array(pil_image.resize((224, 224))).astype(np.float32) / 255.0
+        overlay = show_cam_on_image(rgb, grayscale, use_rgb=True)
+        return Image.fromarray(overlay), None
 
-        cam = GradCAM(model=wrapper, target_layers=[cam_target])
-        grayscale_cam = cam(input_tensor=tensor)[0]   # [H, W]  0-1
+    except Exception as exc:
+        return None, str(exc)
 
-        # Overlay heatmap on original image
-        rgb = np.array(pil_image.resize((224, 224))).astype(np.float32) / 255.0
-        overlay = show_cam_on_image(rgb, grayscale_cam, use_rgb=True)
-        return Image.fromarray(overlay)
 
+# ──────────────────────────────────────────────
+# IP GEOLOCATION
+# ──────────────────────────────────────────────
+def get_location(ip: str):
+    """
+    Returns location dict on success, or None if unavailable.
+    Uses ipapi.co (HTTPS, free, works on Streamlit Cloud).
+    """
+    if not ip or ip in ("127.0.0.1", "localhost", "::1"):
+        return None   # no real IP — caller will skip location display
+    try:
+        r = requests.get(
+            f"https://ipapi.co/{ip}/json/",
+            headers={"User-Agent": "deepfake-detector/1.0"},
+            timeout=5,
+        )
+        data = r.json()
+        if data.get("error"):
+            return None
+        return {
+            "city":       data.get("city", ""),
+            "regionName": data.get("region", ""),
+            "country":    data.get("country_name", ""),
+            "isp":        data.get("org", ""),
+        }
     except Exception:
         return None
-
-
-# ──────────────────────────────────────────────
-# IP GEOLOCATION (free, no API key needed)
-# ──────────────────────────────────────────────
-def get_location(ip: str) -> dict:
-    """Returns city, country, ISP for a given IP address."""
-    if ip in ("127.0.0.1", "localhost", "::1", ""):
-        return {
-            "status":  "demo",
-            "country": "Demo Mode",
-            "regionName": "Local",
-            "city":    "Localhost",
-            "isp":     "Local Network",
-            "query":   ip,
-        }
-    try:
-        r = requests.get(f"http://ip-api.com/json/{ip}", timeout=4)
-        return r.json()
-    except Exception:
-        return {
-            "status":  "fail",
-            "country": "Unknown",
-            "regionName": "Unknown",
-            "city":    "Unknown",
-            "isp":     "Unknown",
-            "query":   ip,
-        }
 
 
 # ──────────────────────────────────────────────
@@ -377,90 +414,65 @@ def count_detections() -> int:
 init_db()
 
 # ──────────────────────────────────────────────
-# SIDEBAR
+# SIDEBAR — minimal, professional
 # ──────────────────────────────────────────────
-st.sidebar.image(
-    "https://img.icons8.com/fluency/96/search.png", width=60
-)
-st.sidebar.title("⚙️ Configuration")
+st.sidebar.markdown("## 🔍 DeepFake Detector")
+st.sidebar.caption("Xception + ViT-B/16 · Gated Fusion · FF++")
+st.sidebar.divider()
 
-checkpoint_path = st.sidebar.text_input(
-    "Model Checkpoint (.pt)",
-    value=str(MODEL_PATH),
-    help="Path to your trained Gated Fusion model checkpoint"
+# IP Source — only Demo or Auto (no manual entry)
+st.sidebar.markdown("**Uploader Identification**")
+ip_mode = st.sidebar.radio(
+    "Mode",
+    ["Demo Mode", "Auto-detect"],
+    label_visibility="collapsed",
+    help="Demo Mode uses a simulated IP for presentation."
 )
+
+if ip_mode == "Auto-detect":
+    demo_ip = get_uploader_ip()   # silent — no display in sidebar
+else:
+    demo_ip = st.sidebar.selectbox(
+        "Simulated Region",
+        [
+            "103.45.67.89  — Mumbai",
+            "49.36.122.5   — Delhi",
+            "117.96.0.1    — Bengaluru",
+            "182.68.15.10  — Chennai",
+        ],
+        label_visibility="collapsed",
+    ).split()[0]   # extract IP only
 
 st.sidebar.divider()
-st.sidebar.subheader("🌐 IP Configuration")
-ip_mode = st.sidebar.radio(
-    "IP Source",
-    ["Detect Uploader IP", "Simulate IP (Demo)", "Enter IP Manually"],
-    help="Automatic mode requires a trusted Nginx/reverse-proxy deployment."
-)
-
-if ip_mode == "Detect Uploader IP":
-    demo_ip = get_uploader_ip()
-    if demo_ip:
-        st.sidebar.success(f"Uploader network IP: {demo_ip}")
-    else:
-        st.sidebar.warning("Uploader IP is unavailable. Deploy behind a configured reverse proxy.")
-elif ip_mode == "Simulate IP (Demo)":
-    demo_ip = st.sidebar.selectbox(
-        "Simulated Uploader IP",
-        [
-            "103.45.67.89   (Mumbai, Jio)",
-            "49.36.122.5    (Delhi, Airtel)",
-            "117.96.0.1     (Bengaluru, BSNL)",
-            "182.68.15.10   (Chennai, Airtel)",
-            "Custom...",
-        ]
-    )
-    if demo_ip == "Custom...":
-        demo_ip = st.sidebar.text_input("Enter IP:", "8.8.8.8")
-    else:
-        demo_ip = demo_ip.split()[0]  # extract IP part
-else:
-    demo_ip = st.sidebar.text_input("IP Address:", "")
+st.sidebar.caption("M.Tech Project · Enhanced Deepfake Detection Framework")
 
 # ──────────────────────────────────────────────
-# LOAD MODEL
+# LOAD MODEL (silent — no UI clutter)
 # ──────────────────────────────────────────────
-if not os.path.exists(checkpoint_path):
-    st.sidebar.error(f"❌ Not found: `{checkpoint_path}`")
-    st.error(f"""
-    ### Model checkpoint not found!
-    Please set the correct path to your `best.pt` file in the sidebar.
-    
-    Your checkpoint should be at the path printed at the end of training.
-    """)
+if not os.path.exists(MODEL_PATH):
+    st.error("Model checkpoint not found. Please check deployment configuration.")
     st.stop()
 
-with st.sidebar:
-    try:
-        with st.spinner("Loading model..."):
-            model = load_model(checkpoint_path)
-    except Exception as error:
-        st.error(f"Could not load the model checkpoint: {error}")
-        st.stop()
-    st.success("✅ Model loaded (110M params)")
-    st.caption("Xception + ViT-B/16 | Gated Fusion")
+try:
+    model = load_model(str(MODEL_PATH))
+except Exception as error:
+    st.error(f"Model could not be loaded: {error}")
+    st.stop()
 
 # ──────────────────────────────────────────────
 # MAIN PAGE
 # ──────────────────────────────────────────────
-st.title("🔍 DeepFake Image Detection System")
-st.markdown(
-    "**M.Tech Project** — Enhanced Deepfake Detection with "
-    "Forensic Source Attribution | Xception + ViT-B/16 + Gated Fusion"
-)
+st.markdown("## DeepFake Image Detection System")
+st.caption("Forensic Source Attribution · Xception + ViT-B/16 · Gated Feature Fusion · FaceForensics++")
 st.divider()
 
 # Stats row
 total_logged = count_detections()
-c1, c2, c3 = st.columns(3)
-c1.metric("Model Accuracy", "96.0%", "On FF++ Test Set")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Accuracy", "96.0%", "FF++ Test Set")
 c2.metric("ROC-AUC", "0.994", "Gated Fusion")
-c3.metric("Total Deepfakes Logged", str(total_logged), "In forensic DB")
+c3.metric("Precision", "98.8%", "Fake Class")
+c4.metric("Cases Logged", str(total_logged))
 
 st.divider()
 
@@ -509,77 +521,73 @@ with col_right:
             """, unsafe_allow_html=True)
 
             m1, m2 = st.columns(2)
-            m1.metric("Fake Confidence", f"{confidence:.1%}")
-            m2.metric("Decision Threshold", "50.0%")
+            m1.metric("Confidence Score", f"{confidence:.1%}")
+            m2.metric("Threshold", "50.0%")
 
-            # Confidence progress bar
-            st.markdown("**Detection Confidence**")
-            st.progress(float(confidence), text=f"{confidence:.1%} — Model is {confidence:.0%} sure this is FAKE")
+            st.progress(float(confidence), text=f"Manipulation probability: {confidence:.1%}")
 
-            # Get geolocation
-            with st.spinner("📡 Looking up IP location..."):
-                location = get_location(demo_ip)
+            # Get geolocation silently
+            location = get_location(demo_ip)
 
             # Log to DB
             log_detection(
                 ip=demo_ip,
-                loc=location,
+                loc=location or {},
                 confidence=confidence,
                 image_hash=image_hash,
                 filename=uploaded_file.name
             )
 
-            # Forensic panel
+            # Forensic Evidence Panel
             st.markdown("---")
-            st.markdown("### 🕵️ Forensic Evidence Captured")
+            st.markdown(
+                '<span class="badge-logged">● Evidence Recorded</span>',
+                unsafe_allow_html=True
+            )
+            st.markdown("**Forensic Source Attribution**")
+
+            # Build location rows only if available
+            loc_rows = ""
+            if location:
+                loc_rows = f"""
+| City | {location.get('city', '—')} |
+| Region | {location.get('regionName', '—')} |
+| Country | {location.get('country', '—')} |
+| ISP | {location.get('isp', '—')} |"""
 
             st.markdown(f"""
-| Field | Captured Value |
-|:------|:--------------|
-| 🌐 **IP Address** | `{demo_ip}` |
-| 🏙️ **City** | {location.get('city','Unknown')} |
-| 🗺️ **Region** | {location.get('regionName','Unknown')} |
-| 🌍 **Country** | {location.get('country','Unknown')} |
-| 📡 **ISP** | {location.get('isp','Unknown')} |
-| ⏰ **Timestamp** | {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |
-| 🔑 **Image Hash** | `{image_hash[:24]}...` |
-| 📁 **Filename** | `{uploaded_file.name}` |
+| Attribute | Value |
+|:----------|:------|
+| IP Address | `{demo_ip}` |{loc_rows}
+| Timestamp | {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} |
+| SHA-256 Hash | `{image_hash[:32]}...` |
+| Filename | `{uploaded_file.name}` |
             """)
-
-            st.warning(
-                "⚠️ This detection has been saved to the forensic database. "
-                "Evidence is available for cybercrime investigation."
-            )
 
         else:
             st.markdown("""
             <div class="real-box">
-                <h2>✅ AUTHENTIC IMAGE</h2>
+                <h2>AUTHENTIC — No Manipulation Detected</h2>
             </div>
             """, unsafe_allow_html=True)
 
             m1, m2 = st.columns(2)
-            m1.metric("Real Confidence", f"{confidence:.1%}")
-            m2.metric("Forensic Log", "Not Created")
+            m1.metric("Authenticity Score", f"{confidence:.1%}")
+            m2.metric("Forensic Record", "Not Created")
 
-            # Confidence bar for real images too
-            st.markdown("**Detection Confidence**")
-            st.progress(float(confidence), text=f"{confidence:.1%} — Model is {confidence:.0%} sure this is REAL")
+            st.progress(float(confidence), text=f"Authenticity confidence: {confidence:.1%}")
 
-            st.info(
-                "ℹ️ Image appears genuine. "
-                "No forensic record created."
-            )
+            st.caption("Image passed forensic verification. No record created.")
 
     elif not uploaded_file:
         st.markdown("""
-        *Results will appear here after you upload and analyse an image.*
+        *Upload an image to begin analysis.*
 
         **How it works:**
-        1. Upload any image
-        2. Model analyses for manipulation artifacts
-        3. If FAKE → forensic log automatically created
-        4. Evidence stored with IP, location, timestamp
+        1. Upload any face image
+        2. Dual-branch model analyses spatial & semantic features
+        3. Manipulated images trigger forensic source attribution
+        4. All evidence is timestamped and hash-verified
         """)
 
 # ── GRAD-CAM — full width below both columns, FAKE detections only ──────────
@@ -591,7 +599,7 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
         "🔴 Red = high attention  ·  🔵 Blue = ignored region."
     )
     with st.spinner("Generating Grad-CAM heatmap..."):
-        heatmap = get_gradcam(model, img_tensor, image)
+        heatmap, cam_error = get_gradcam(model, img_tensor, image)
 
     if heatmap is not None:
         g1, g2 = st.columns(2)
@@ -609,7 +617,7 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
             "skin texture (NeuralTextures)."
         )
     else:
-        st.info("Grad-CAM heatmap could not be generated for this image.")
+        st.warning(f"⚠️ Grad-CAM could not be generated. Reason: `{cam_error}`")
 
 # ──────────────────────────────────────────────
 # FORENSIC LOG TABLE
@@ -651,20 +659,14 @@ if log_rows:
         mime="text/csv"
     )
 else:
-    st.info(
-        "📭 No detections logged yet. "
-        "Upload a deepfake image to create the first entry."
-    )
+    st.caption("No detections recorded yet. Upload an image to begin.")
 
 # ──────────────────────────────────────────────
 # FOOTER
 # ──────────────────────────────────────────────
 st.divider()
-col_f1, col_f2 = st.columns(2)
-col_f1.caption(
-    "**M.Tech Project** — Enhanced Deepfake Image Detection Framework"
-)
-col_f2.caption(
-    "Xception + ViT-B/16 | Gated Feature Fusion | "
-    "FaceForensics++ | Accuracy: 96.0% | AUC: 0.994"
+st.caption(
+    "Enhanced Deepfake Detection Framework · M.Tech Project · "
+    "Xception + ViT-B/16 · Gated Feature Fusion · FaceForensics++ · "
+    "Accuracy 96.0% · AUC 0.994"
 )
