@@ -259,26 +259,22 @@ def predict(model, transform, device, image: Image.Image, threshold: float = 0.5
 # ──────────────────────────────────────────────
 def get_gradcam(model, tensor, pil_image, model_kind):
     """
-    Grad-CAM on Xception's last conv activation (act4).
+    Grad-CAM on Xception's final spatial convolution.
     Returns (PIL overlay, None) on success, (None, error_str) on failure.
     """
     try:
         from pytorch_grad_cam import GradCAM
         from pytorch_grad_cam.utils.image import show_cam_on_image
 
-        # ── Find act4 (last activation before GAP) in legacy_xception ────────
-        # Walk named_modules to find the last activation layer reliably
-        target_layer = None
-        for name, mod in model.cnn.named_modules():
-            if name in ("act4", "bn4", "conv4"):
-                target_layer = mod
-                break          # act4 is preferred; break on first match
-
+        # Use the final spatial 3x3 convolution so the CAM retains location
+        # information instead of targeting the following 1x1 projection.
+        target_layer = dict(model.cnn.named_modules()).get("conv4.conv1")
         if target_layer is None:
-            # Fallback: last non-container child of cnn
-            leaves = [m for m in model.cnn.modules()
-                      if len(list(m.children())) == 0]
-            target_layer = leaves[-1] if leaves else None
+            convolutional_layers = [
+                module for module in model.cnn.modules()
+                if isinstance(module, nn.Conv2d)
+            ]
+            target_layer = convolutional_layers[-1] if convolutional_layers else None
 
         if target_layer is None:
             return None, "Cannot find target conv layer in Xception backbone."
@@ -301,6 +297,12 @@ def get_gradcam(model, tensor, pil_image, model_kind):
         # Grad-CAM passes each sample's scalar binary output to the target.
         targets   = [lambda output: output.squeeze()]
         grayscale = cam(input_tensor=tensor, targets=targets)[0]
+        grayscale = np.nan_to_num(grayscale, nan=0.0, posinf=0.0, neginf=0.0)
+        lower, upper = np.percentile(grayscale, (2, 98))
+        if upper > lower:
+            grayscale = np.clip((grayscale - lower) / (upper - lower), 0.0, 1.0)
+        else:
+            grayscale = np.zeros_like(grayscale)
 
         # ── Overlay on resized original ───────────────────────────────────────
         rgb     = np.array(pil_image.resize((224, 224))).astype(np.float32) / 255.0
