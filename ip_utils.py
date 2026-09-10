@@ -7,7 +7,7 @@ Supports:
   discovery services (ipify, ifconfig.me, my-ip.io).
 """
 
-from _future_ import annotations
+from __future__ import annotations
 
 import ipaddress
 import json
