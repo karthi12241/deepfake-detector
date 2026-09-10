@@ -12,7 +12,7 @@ import zipfile
 
 import gdown
 
-ROOT = Path(_file_).resolve().parent
+ROOT = Path(__file__).resolve().parent
 DRIVE_MODEL_PATH = Path("/content/drive/MyDrive/new_dataset_deepfake/outputs/cross_attention_v1/best.pt")
 
 def download_model(destination=ROOT / "best.pt"):
