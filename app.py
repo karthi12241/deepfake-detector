@@ -60,6 +60,7 @@ import datetime
 import hashlib
 import requests
 import numpy as np
+from test import build_model, make_transform, unpack_checkpoint
 
 ROOT = Path(__file__).resolve().parent
 
@@ -205,19 +206,14 @@ class XceptionViTFusionModel(nn.Module):
 # ──────────────────────────────────────────────
 @st.cache_resource
 def load_model(checkpoint_path: str):
-    model = XceptionViTFusionModel()
     ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    # Handle different checkpoint formats
-    if isinstance(ckpt, dict):
-        state = (ckpt.get('model_state')
-                 or ckpt.get('model_state_dict')
-                 or ckpt.get('state_dict')
-                 or ckpt)
-    else:
-        state = ckpt
+    state, model_config = unpack_checkpoint(ckpt)
+    model = build_model(model_config, state)
     model.load_state_dict(state)
     model.eval()
-    return model
+    saved_config = ckpt.get('config', {}) if isinstance(ckpt, dict) else {}
+    image_size = int(saved_config.get('training', {}).get('image_size', 224))
+    return model, image_size
 
 
 # ──────────────────────────────────────────────
@@ -233,9 +229,9 @@ val_transform = transforms.Compose([
     transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
 ])
 
-def predict(model, image: Image.Image):
+def predict(model, image: Image.Image, image_size: int):
     """Returns (label, confidence, tensor) where label is 'FAKE' or 'REAL'."""
-    tensor = val_transform(image.convert("RGB")).unsqueeze(0)  # [1,3,224,224]
+    tensor = make_transform(image_size)(image.convert("RGB")).unsqueeze(0)  # [1,3,H,W]
     with torch.no_grad():
         logit = model(tensor)
         prob  = torch.sigmoid(logit).item()
@@ -459,7 +455,7 @@ if not os.path.exists(MODEL_PATH):
     st.stop()
 
 try:
-    model = load_model(str(MODEL_PATH))
+    model, model_image_size = load_model(str(MODEL_PATH))
 except Exception as error:
     st.error(f"Model could not be loaded: {error}")
     st.stop()
@@ -513,7 +509,7 @@ with col_right:
 
     if uploaded_file and analyse_btn:
         with st.spinner("🧠 Running model inference..."):
-            label, confidence, img_tensor = predict(model, image)
+            label, confidence, img_tensor = predict(model, image, model_image_size)
             img_bytes  = uploaded_file.getvalue()
             image_hash = hashlib.sha256(img_bytes).hexdigest()
 
