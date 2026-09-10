@@ -13,7 +13,7 @@ import zipfile
 import gdown
 
 ROOT = Path(__file__).resolve().parent
-DRIVE_MODEL_PATH = Path("/content/drive/MyDrive/new_dataset_deepfake/outputs/cross_attention_v1/best.pt")
+MODEL_SOURCE = "https://drive.google.com/file/d/1q56SwOAoPCYlhskiMZ-HkKwu3yjpI16m/view?usp=sharing"
 
 def download_model(destination=ROOT / "best.pt"):
     """Download the checkpoint from Google Drive and verify its container."""
@@ -25,9 +25,11 @@ def download_model(destination=ROOT / "best.pt"):
         destination.unlink()
 
     print("Downloading model checkpoint...")
-    file_id = os.environ.get("MODEL_FILE_ID", "1ssg4HbrIpbxewCu3E7Tp7vTw2CChTD3S")
     temporary_path = destination.with_suffix(destination.suffix + ".download")
-    gdown.download(id=file_id, output=str(temporary_path), quiet=False)
+    if MODEL_SOURCE.startswith(("http://", "https://")):
+        gdown.download(url=MODEL_SOURCE, output=str(temporary_path), quiet=False)
+    else:
+        gdown.download(id=MODEL_SOURCE, output=str(temporary_path), quiet=False)
 
     if not temporary_path.exists() or not zipfile.is_zipfile(temporary_path):
         temporary_path.unlink(missing_ok=True)
@@ -41,10 +43,7 @@ def download_model(destination=ROOT / "best.pt"):
 
 
 def get_model_path() -> Path:
-    """Use the mounted Drive checkpoint, or download it for local runs."""
-    if DRIVE_MODEL_PATH.exists() and zipfile.is_zipfile(DRIVE_MODEL_PATH):
-        return DRIVE_MODEL_PATH
-
+    """Use a bundled checkpoint, or download it from Google Drive."""
     local_model_path = ROOT / "best.pt"
     download_model(local_model_path)
     return local_model_path
