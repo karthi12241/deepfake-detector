@@ -257,7 +257,7 @@ def predict(model, transform, device, image: Image.Image, threshold: float = 0.5
 # ──────────────────────────────────────────────
 # GRAD-CAM EXPLAINABILITY (XAI)
 # ──────────────────────────────────────────────
-def get_gradcam(model, tensor, pil_image):
+def get_gradcam(model, tensor, pil_image, model_kind):
     """
     Grad-CAM on Xception's last conv activation (act4).
     Returns (PIL overlay, None) on success, (None, error_str) on failure.
@@ -289,9 +289,11 @@ def get_gradcam(model, tensor, pil_image):
                 super().__init__()
                 self.m = m
             def forward(self, x):
-                # Do not duplicate a particular fusion path here: checkpoints
-                # can be Gated or Bidirectional.  Calling the model itself
-                # preserves the exact inference path used for its prediction.
+                if model_kind == "Bidirectional":
+                    cnn_tokens = self.m.cnn(x).flatten(2).transpose(1, 2)
+                    vit_tokens = self.m.vit.forward_features(x)[:, 1:, :]
+                    fused = self.m.fusion(cnn_tokens, vit_tokens)
+                    return self.m.classifier(fused).squeeze(1)
                 return self.m(x)
 
         wrapper   = _Wrap(model)
@@ -619,7 +621,7 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
         "🔴 Red = high attention  ·  🔵 Blue = ignored region."
     )
     with st.spinner("Generating Grad-CAM heatmap..."):
-        heatmap, cam_error = get_gradcam(model, img_tensor, image)
+        heatmap, cam_error = get_gradcam(model, img_tensor, image, model_kind)
 
     if heatmap is not None:
         g1, g2 = st.columns(2)
