@@ -59,7 +59,6 @@ import json
 import datetime
 import hashlib
 import numpy as np
-import cv2
 
 # Keep app inference identical to the evaluation notebook.  These helpers
 # inspect the checkpoint to select the correct fusion architecture and use the
@@ -457,7 +456,11 @@ def get_gradcam(model, tensor, pil_image):
 
         # Resize CAM to original image dimensions
         orig_w, orig_h = pil_image.size
-        cam_resized = cv2.resize(norm_cam, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+        cam_image = Image.fromarray((norm_cam * 255).astype(np.uint8), mode="L")
+        cam_resized = np.asarray(
+            cam_image.resize((orig_w, orig_h), Image.Resampling.BILINEAR),
+            dtype=np.float32,
+        ) / 255.0
         cam_resized = np.clip(cam_resized, 0.0, 1.0)
 
         # Overlay onto original RGB image
