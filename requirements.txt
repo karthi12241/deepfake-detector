@@ -7,6 +7,9 @@ requests>=2.28.0
 pandas>=1.5.0
 insightface>=0.7.3
 onnxruntime>=1.16.0
-opencv-python>=4.8.0
+# Server deployments do not provide libGL.so.1.  The headless wheel retains
+# all OpenCV operations used by face detection and Grad-CAM without GUI/OpenGL
+# dependencies.
+opencv-python-headless>=4.8.0
 gdown>=4.6.0
 grad-cam>=1.4.8
