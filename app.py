@@ -672,3 +672,4 @@ st.caption(
     "Xception + ViT-B/16 · Gated Feature Fusion · FaceForensics++ · "
     "Accuracy 96.0% · AUC 0.994"
 )
+

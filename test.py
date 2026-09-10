@@ -179,7 +179,7 @@ def crop_largest_face(image: Image.Image, margin: float, min_face_size: int) -> 
             left, top = max(0, x - pad_x), max(0, y - pad_y)
             right, bottom = min(image.width, x + width + pad_x), min(image.height, y + height + pad_y)
             return FaceCrop(image.crop((left, top, right, bottom)), "detected face")
-    except ImportError:
+    except (ImportError, AttributeError):
         pass
     return FaceCrop(image, "full image fallback")
 
