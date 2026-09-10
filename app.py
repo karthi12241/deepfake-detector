@@ -66,7 +66,7 @@ import cv2
 # inspect the checkpoint to select the correct fusion architecture and use the
 # checkpoint's recorded image size.
 from test import build_model, make_transform, unpack_checkpoint
-from ip_utils import get_uploader_ip as resolve_uploader_ip
+from ip_utils import get_uploader_ip as resolve_uploader_ip, get_ip_diagnostics
 
 ROOT = Path(__file__).resolve().parent
 
@@ -483,7 +483,14 @@ def get_location(ip: str):
     Uses multi-provider fallback (ipapi.co -> freeipapi.com -> ip-api.com).
     Cached for 1 hour to optimize performance.
     """
-    if not ip or ip in ("127.0.0.1", "localhost", "::1", "Unknown"):
+    if not ip or ip.startswith("Unavailable") or ip in ("127.0.0.1", "localhost", "::1", "Unknown"):
+        if not ip or ip.startswith("Unavailable"):
+            return {
+                "city": "Unavailable",
+                "regionName": "Not exposed by hosting platform",
+                "country": "Unknown",
+                "isp": "N/A (Streamlit Cloud proxy limitation)",
+            }
         return {
             "city": "Localhost / Internal",
             "regionName": "Local Network",
@@ -563,12 +570,9 @@ def get_uploader_ip() -> str:
     try:
         headers = getattr(st.context, "headers", {}) or {}
         peer_ip = getattr(st.context, "ip", "") or ""
-        return resolve_uploader_ip(headers, peer_ip, trust_forwarded_headers=True)
+        return resolve_uploader_ip(headers, peer_ip, trust_forwarded_headers=True, allow_local_dev_fallback=False)
     except Exception:
-        try:
-            return resolve_uploader_ip({}, "", trust_forwarded_headers=True)
-        except Exception:
-            return "127.0.0.1"
+        return "Unavailable (Not exposed by hosting platform)"
 
 
 LOG_PATH = ROOT / "forensic_log.json"
@@ -665,10 +669,28 @@ ip_mode = st.sidebar.radio(
 
 if ip_mode == "Auto-detect (Real Public IP)":
     uploader_ip = get_uploader_ip()
-    st.sidebar.markdown(f"🟢 **Live IP:** `{uploader_ip}`")
-    loc_sidebar = get_location(uploader_ip)
-    if loc_sidebar and loc_sidebar.get("city") and loc_sidebar.get("city") != "Unknown":
-        st.sidebar.caption(f"📍 {loc_sidebar.get('city')}, {loc_sidebar.get('country')}")
+    if uploader_ip.startswith("Unavailable"):
+        st.sidebar.markdown("⚠️ **IP:** `Not exposed by platform`")
+        st.sidebar.caption("Streamlit Cloud ingress proxy did not forward client IP.")
+    else:
+        st.sidebar.markdown(f"🟢 **Live IP:** `{uploader_ip}`")
+        loc_sidebar = get_location(uploader_ip)
+        if loc_sidebar and loc_sidebar.get("city") and loc_sidebar.get("city") not in ("Unknown", "Unavailable"):
+            st.sidebar.caption(f"📍 {loc_sidebar.get('city')}, {loc_sidebar.get('country')}")
+
+    # Temporary testing diagnostics for deployment verification
+    with st.sidebar.expander("🔍 Network IP Diagnostics (Testing)", expanded=False):
+        ip_diag = get_ip_diagnostics(getattr(st.context, "headers", {}) or {}, getattr(st.context, "ip", "") or "")
+        st.write(f"**st.context.ip:** `{ip_diag['peer_ip_raw']}`")
+        st.write(f"**Environment:** `{ip_diag['environment']}`")
+        st.write(f"**Resolution Source:** `{ip_diag['resolution_source']}`")
+        st.write(f"**Resolved IP:** `{ip_diag['final_resolved_ip']}`")
+        st.caption("Forwarded Headers (Sanitized):")
+        if ip_diag["relevant_headers"]:
+            for k, v in ip_diag["relevant_headers"].items():
+                st.text(f"{k}: {v}")
+        else:
+            st.caption("None present in request context")
 else:
     sim_selection = st.sidebar.selectbox(
         "Simulated Region",
@@ -776,12 +798,16 @@ with col_right:
 
         # Build location rows if available
         loc_rows = ""
-        if location and location.get("city") != "Unknown":
+        if location and location.get("city") not in ("Unknown", "Unavailable"):
             loc_rows = f"""
 | City | {location.get('city', '—')} |
 | Region | {location.get('regionName', '—')} |
 | Country | {location.get('country', '—')} |
 | ISP | {location.get('isp', '—')} |"""
+        elif location and location.get("city") == "Unavailable":
+            loc_rows = """
+| Geolocation | `Not Available (Proxy / Cloud Limitation)` |
+| Note | `Streamlit Cloud proxy did not forward client IP` |"""
 
         # ── RESULT DISPLAY ──
         if label == "FAKE":
@@ -918,56 +944,7 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
     else:
         st.warning(f"⚠️ Grad-CAM could not be computed. Reason: `{cam_error}`")
 
-    # Diagnostic information for development and inspection
-    with st.expander("🛠️ Grad-CAM Diagnostics (Debug Info)"):
-        st.markdown(f"**Target Layer (Deterministic Primary):** `{diagnostics.get('target_layer_name', 'N/A')}`")
-        st.markdown(f"**Attribution Status:** `{diagnostics.get('status', 'N/A')}`")
 
-        st.markdown("#### 1. Captured Activations ($A_k$)")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Min", f"{diagnostics.get('act_min', 0.0):.4f}")
-        c2.metric("Max", f"{diagnostics.get('act_max', 0.0):.4f}")
-        c3.metric("Mean", f"{diagnostics.get('act_mean', 0.0):.4f}")
-        c4.metric("Std", f"{diagnostics.get('act_std', 0.0):.4f}")
-
-        st.markdown("#### 2. Captured Gradients ($G_k = \\partial y / \\partial A_k$)")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Min", f"{diagnostics.get('grad_min', 0.0):.4e}")
-        c2.metric("Max", f"{diagnostics.get('grad_max', 0.0):.4e}")
-        c3.metric("Mean", f"{diagnostics.get('grad_mean', 0.0):.4e}")
-        c4.metric("Std", f"{diagnostics.get('grad_std', 0.0):.4e}")
-
-        st.markdown("#### 3. Channel Weights ($\\alpha_k = \\text{GAP}(G_k)$)")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Min", f"{diagnostics.get('alpha_min', 0.0):.4e}")
-        c2.metric("Max", f"{diagnostics.get('alpha_max', 0.0):.4e}")
-        c3.metric("Mean", f"{diagnostics.get('alpha_mean', 0.0):.4e}")
-        c4.metric("Std", f"{diagnostics.get('alpha_std', 0.0):.4e}")
-
-        st.markdown("#### 4. Pre-ReLU Weighted Sum ($S = \\sum_k \\alpha_k A_k$)")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Min", f"{diagnostics.get('pre_relu_min', 0.0):.4e}")
-        c2.metric("Max", f"{diagnostics.get('pre_relu_max', 0.0):.4e}")
-        c3.metric("Mean", f"{diagnostics.get('pre_relu_mean', 0.0):.4e}")
-        c4.metric("Std", f"{diagnostics.get('pre_relu_std', 0.0):.4e}")
-
-        st.markdown("#### 5. Post-ReLU CAM ($\\max(0, S)$)")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Min", f"{diagnostics.get('post_relu_min', 0.0):.4e}")
-        c2.metric("Max", f"{diagnostics.get('post_relu_max', 0.0):.4e}")
-        c3.metric("Mean", f"{diagnostics.get('post_relu_mean', 0.0):.4e}")
-        c4.metric("Std", f"{diagnostics.get('post_relu_std', 0.0):.4e}")
-
-        # Auxiliary conv4 diagnostic baseline comparison
-        if "conv4_comparison" in diagnostics:
-            c4 = diagnostics["conv4_comparison"]
-            st.markdown("---")
-            st.markdown("#### 🔬 Diagnostic Baseline Comparison: `model.cnn.conv4 (SeparableConv2d)`")
-            st.caption("Raw pre-activation layer before BatchNorm and ReLU (for research verification):")
-            sc1, sc2, sc3 = st.columns(3)
-            sc1.write(f"**Status:** `{c4.get('status')}`")
-            sc2.write(f"**pre-ReLU range:** `[{c4.get('pre_relu_min', 0.0):.4e}, {c4.get('pre_relu_max', 0.0):.4e}]`")
-            sc3.write(f"**post-ReLU CAM max:** `{c4.get('post_relu_max', 0.0):.4e}` (std: `{c4.get('post_relu_std', 0.0):.4e}`)")
 
 # ──────────────────────────────────────────────
 # FORENSIC LOG TABLE
