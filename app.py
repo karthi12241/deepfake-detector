@@ -60,9 +60,7 @@ import json
 import datetime
 import hashlib
 import requests
-import os
-from pathlib import Path
-
+import numpy as np
 
 ROOT = Path(__file__).resolve().parent
 
@@ -205,14 +203,63 @@ val_transform = transforms.Compose([
 ])
 
 def predict(model, image: Image.Image):
-    """Returns (label, confidence) where label is 'FAKE' or 'REAL'."""
+    """Returns (label, confidence, tensor) where label is 'FAKE' or 'REAL'."""
     tensor = val_transform(image.convert("RGB")).unsqueeze(0)  # [1,3,224,224]
     with torch.no_grad():
         logit = model(tensor)
         prob  = torch.sigmoid(logit).item()
     label      = "FAKE" if prob > 0.5 else "REAL"
     confidence = prob if label == "FAKE" else 1.0 - prob
-    return label, confidence
+    return label, confidence, tensor
+
+
+# ──────────────────────────────────────────────
+# GRAD-CAM EXPLAINABILITY (XAI)
+# ──────────────────────────────────────────────
+def get_gradcam(model, tensor, pil_image):
+    """
+    Generate Grad-CAM heatmap on Xception's last conv block.
+    Target layer: model.cnn (output before mean-pool) → act4.
+    Returns PIL Image with heatmap overlay, or None on failure.
+    """
+    try:
+        from pytorch_grad_cam import GradCAM
+        from pytorch_grad_cam.utils.image import show_cam_on_image
+
+        # Find target layer — Xception's last spatial feature map
+        try:
+            target_layer = model.cnn.act4          # timm legacy_xception
+        except AttributeError:
+            target_layer = list(model.cnn.children())[-1]
+
+        # GradCAM needs a wrapper that returns 2-D output
+        # We hook into the CNN branch only
+        class _CNNWrapper(nn.Module):
+            def __init__(self, m): super().__init__(); self.m = m
+            def forward(self, x):
+                cnn_f = self.m.cnn(x).mean(dim=(2, 3))
+                vit_f = self.m.vit.forward_features(x)[:, 0, :]
+                fused = self.m.fusion(cnn_f, vit_f)
+                return self.m.classifier(fused)   # [B, 1]
+
+        wrapper = _CNNWrapper(model)
+
+        # Re-target to cnn.act4 inside wrapper
+        try:
+            cam_target = wrapper.m.cnn.act4
+        except AttributeError:
+            cam_target = list(wrapper.m.cnn.children())[-1]
+
+        cam = GradCAM(model=wrapper, target_layers=[cam_target])
+        grayscale_cam = cam(input_tensor=tensor)[0]   # [H, W]  0-1
+
+        # Overlay heatmap on original image
+        rgb = np.array(pil_image.resize((224, 224))).astype(np.float32) / 255.0
+        overlay = show_cam_on_image(rgb, grayscale_cam, use_rgb=True)
+        return Image.fromarray(overlay)
+
+    except Exception:
+        return None
 
 
 # ──────────────────────────────────────────────
@@ -418,6 +465,9 @@ c3.metric("Total Deepfakes Logged", str(total_logged), "In forensic DB")
 st.divider()
 
 # ── UPLOAD + RESULT ──
+label       = None   # initialised here so Grad-CAM check below never crashes
+img_tensor  = None
+analyse_btn = False
 col_left, col_right = st.columns([1, 1], gap="large")
 
 with col_left:
@@ -446,7 +496,7 @@ with col_right:
 
     if uploaded_file and analyse_btn:
         with st.spinner("🧠 Running model inference..."):
-            label, confidence = predict(model, image)
+            label, confidence, img_tensor = predict(model, image)
             img_bytes  = uploaded_file.getvalue()
             image_hash = hashlib.sha256(img_bytes).hexdigest()
 
@@ -461,6 +511,10 @@ with col_right:
             m1, m2 = st.columns(2)
             m1.metric("Fake Confidence", f"{confidence:.1%}")
             m2.metric("Decision Threshold", "50.0%")
+
+            # Confidence progress bar
+            st.markdown("**Detection Confidence**")
+            st.progress(float(confidence), text=f"{confidence:.1%} — Model is {confidence:.0%} sure this is FAKE")
 
             # Get geolocation
             with st.spinner("📡 Looking up IP location..."):
@@ -508,6 +562,10 @@ with col_right:
             m1.metric("Real Confidence", f"{confidence:.1%}")
             m2.metric("Forensic Log", "Not Created")
 
+            # Confidence bar for real images too
+            st.markdown("**Detection Confidence**")
+            st.progress(float(confidence), text=f"{confidence:.1%} — Model is {confidence:.0%} sure this is REAL")
+
             st.info(
                 "ℹ️ Image appears genuine. "
                 "No forensic record created."
@@ -516,13 +574,42 @@ with col_right:
     elif not uploaded_file:
         st.markdown("""
         *Results will appear here after you upload and analyse an image.*
-        
+
         **How it works:**
         1. Upload any image
         2. Model analyses for manipulation artifacts
         3. If FAKE → forensic log automatically created
         4. Evidence stored with IP, location, timestamp
         """)
+
+# ── GRAD-CAM — full width below both columns, FAKE detections only ──────────
+if analyse_btn and label == "FAKE" and img_tensor is not None:
+    st.divider()
+    st.subheader("🔬 Explainable AI — Where Was Manipulation Detected?")
+    st.caption(
+        "Grad-CAM highlights regions that most influenced the FAKE decision. "
+        "🔴 Red = high attention  ·  🔵 Blue = ignored region."
+    )
+    with st.spinner("Generating Grad-CAM heatmap..."):
+        heatmap = get_gradcam(model, img_tensor, image)
+
+    if heatmap is not None:
+        g1, g2 = st.columns(2)
+        with g1:
+            st.image(image.resize((224, 224)),
+                     caption="📷 Original Image",
+                     use_container_width=True)
+        with g2:
+            st.image(heatmap,
+                     caption="🔴 Grad-CAM Heatmap — Manipulation Region",
+                     use_container_width=True)
+        st.info(
+            "💡 Red/warm areas = where the model detected manipulation. "
+            "Typical patterns: mouth area (Face2Face) · jaw boundary (FaceSwap) · "
+            "skin texture (NeuralTextures)."
+        )
+    else:
+        st.info("Grad-CAM heatmap could not be generated for this image.")
 
 # ──────────────────────────────────────────────
 # FORENSIC LOG TABLE
