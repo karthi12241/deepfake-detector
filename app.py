@@ -74,7 +74,7 @@ st.set_page_config(
 )
 
 try:
-    MODEL_PATH = get_model_path()
+    MODEL_PATH = get_model_path().resolve()
 except Exception as error:
     st.error(f"Unable to obtain the model checkpoint: {error}")
     st.stop()
@@ -419,8 +419,10 @@ init_db()
 # ──────────────────────────────────────────────
 st.sidebar.markdown("## 🔍 DeepFake Detector")
 st.sidebar.caption("Xception + ViT-B/16 · Gated Fusion · FF++")
-st.sidebar.caption("Model checkpoint")
-st.sidebar.code(str(MODEL_PATH.resolve()))
+st.sidebar.caption("Downloaded from Google Drive")
+st.sidebar.code(MODEL_SOURCE)
+st.sidebar.caption("Model loaded from")
+st.sidebar.code(str(MODEL_PATH))
 st.sidebar.divider()
 
 # IP Source — only Demo or Auto (no manual entry)
