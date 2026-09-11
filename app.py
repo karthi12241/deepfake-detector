@@ -461,7 +461,7 @@ def get_gradcam(model, tensor, pil_image):
             cam_image.resize((orig_w, orig_h), Image.Resampling.BILINEAR),
             dtype=np.float32,
         ) / 255.0
-        cam_resized = np.clip(cam_resized, 0.0, 1.0)
+        cam_resized = np.clip(cam_resized, 0.0, 1.0) 
 
         # Overlay onto original RGB image
         rgb = np.asarray(pil_image.convert("RGB"), dtype=np.float32) / 255.0
