@@ -2,7 +2,7 @@
 =============================================================
   DeepFake Detection System — Forensic Image Analysis
   M.Tech Project: Enhanced Deepfake Detection
-  Model: Xception + ViT-B/16 with Gated Feature Fusion
+  Model: Xception + ViT-B/16 with Bidirectional Feature Fusion
   Run: streamlit run demo_app.py
 =============================================================
 """
@@ -573,8 +573,8 @@ st.divider()
 total_logged = count_detections()
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Accuracy", "96.0%", "FF++ Test Set")
-c2.metric("ROC-AUC", "0.994", "Gated Fusion")
-c3.metric("Precision", "98.8%", "Fake Class")
+c2.metric("ROC-AUC", "98.0%", "Bidirectional Fusion")
+c3.metric("Precision", "98.0%", "Fake Class")
 c4.metric("Cases Logged", str(total_logged))
 
 st.divider()
