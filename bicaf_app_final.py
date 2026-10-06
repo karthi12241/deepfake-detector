@@ -473,21 +473,24 @@ def get_gradcam(model, tensor, pil_image):
 # ──────────────────────────────────────────────
 # ATTRIBUTION PACKAGE  (Open-Set + Method + Branch)
 # ──────────────────────────────────────────────
-@st.cache_resource
 def load_attribution_package():
-    """Load attribution_package.pt from Drive (Colab) or the app folder (local).
+    """Load attribution_package.pt from Drive (Colab), local app folder, or working directory.
 
-    Produces no error if the file is absent — the app works normally without it.
-    The file is created by running all steps of BiCAF_Advancement_Attribution_XAI.ipynb.
+    Searches multiple candidate paths without caching None so new files are detected immediately.
+    Created by running Step 10 of BiCAF_Advancement_Attribution_XAI.ipynb.
     """
     candidates = [
         Path("/content/drive/MyDrive/NEW_DATASET_DEEPFAKE/advancement/attribution_package.pt"),
+        Path("/content/drive/MyDrive/new_dataset_deepfake/outputs/cross_attention_v1/attribution_package.pt"),
         ROOT / "attribution_package.pt",
+        Path.cwd() / "attribution_package.pt",
+        ROOT.parent / "attribution_package.pt",
+        ROOT.parent.parent / "attribution_package.pt",
     ]
     for p in candidates:
         if p.exists():
             try:
-                return torch.load(p, weights_only=False)
+                return torch.load(p, weights_only=False, map_location="cpu")
             except Exception:
                 pass
     return None
