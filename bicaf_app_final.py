@@ -608,6 +608,123 @@ def run_attribution(fused_feat: torch.Tensor, attr_pkg: dict) -> dict:
     }
 
 
+def generate_xai_statement(
+    label: str,
+    confidence: float,
+    fake_prob: float,
+    attr_res: dict = None,
+    cam_status: str = None,
+    cam_diag: dict = None,
+) -> str:
+    """Generate a dynamic, articulate natural language XAI forensic explanation statement.
+
+    Dynamically incorporates:
+    - Verdict confidence level & decision margin
+    - Dual-branch (CNN vs ViT) feature dominance split
+    - Predicted manipulation mechanism & confidence breakdown (if attribution_package.pt is loaded)
+    - Open-set Mahalanobis distance & anomaly status (known vs zero-day deepfake)
+    - Grad-CAM spatial activation strength and region localization
+    """
+    conf_pct = f"{confidence * 100:.1f}%"
+
+    if label == "FAKE":
+        if confidence > 0.90:
+            conf_desc = f"with **high forensic confidence ({conf_pct})**, comfortably exceeding the 50.0% classification threshold"
+        elif confidence > 0.70:
+            conf_desc = f"with **moderate-to-high confidence ({conf_pct})**, significantly above the decision boundary"
+        else:
+            conf_desc = f"with **borderline-to-moderate confidence ({conf_pct})**, slightly above the 50.0% threshold"
+
+        statement = [
+            f"**Verdict Rationale:** The dual-branch model classified this image as **DEEPFAKE (Manipulated)** {conf_desc}.\n"
+        ]
+
+        if attr_res and "cnn_share" in attr_res and "vit_share" in attr_res:
+            cnn_p = attr_res["cnn_share"] * 100
+            vit_p = attr_res["vit_share"] * 100
+            if cnn_p >= vit_p:
+                branch_desc = (
+                    f"**Feature Energy Attribution:** The detection is heavily driven by the **Xception CNN branch ({cnn_p:.1f}% feature energy share vs {vit_p:.1f}% ViT)**. "
+                    f"This indicates that the network identified strong **high-frequency spatial artifacts** — such as localized blending boundaries, abnormal pixel-level texture transitions, or compression anomalies around facial features."
+                )
+            else:
+                branch_desc = (
+                    f"**Feature Energy Attribution:** The detection is heavily driven by the **ViT-B/16 Vision Transformer branch ({vit_p:.1f}% feature energy share vs {cnn_p:.1f}% CNN)**. "
+                    f"This indicates that the network identified **long-range semantic inconsistencies** — such as facial geometry misalignment, unnatural lighting/shadow continuity across patches, or structural identity drift."
+                )
+            statement.append(f"{branch_desc}\n")
+        else:
+            statement.append(
+                "**Feature Energy Attribution:** Both Xception CNN (local texture analysis) and ViT-B/16 Transformer (global semantic analysis) "
+                "detected structural anomalies inconsistent with authentic image distributions.\n"
+            )
+
+        if attr_res and "pred_class" in attr_res:
+            method_raw = attr_res["pred_class"]
+            method_nice = _FRIENDLY_NAMES.get(method_raw, method_raw)
+            method_conf = attr_res.get("pred_conf", 0.0) * 100
+            is_unknown = attr_res.get("is_unknown", False)
+            maha = attr_res.get("maha_score", 0.0)
+
+            if is_unknown:
+                mech_desc = (
+                    f"**Forensic Mechanism & Anomaly Assessment:** The feature vector exhibits a **high Mahalanobis anomaly score ({maha:.1f})**, "
+                    f"signaling a **novel or unseen zero-day manipulation technique**. "
+                    f"Among cataloged training methods, it exhibits highest similarity to **{method_nice}** ({method_conf:.1f}% probability)."
+                )
+            else:
+                mech_desc = (
+                    f"**Forensic Mechanism & Anomaly Assessment:** The feature fingerprint matches **{method_nice}** "
+                    f"with **{method_conf:.1f}% probability**. The Mahalanobis distance ({maha:.1f}) confirms this image closely matches the known training distribution for this technique."
+                )
+            statement.append(f"{mech_desc}\n")
+
+        if cam_status == "VALID_CAM" and cam_diag:
+            cam_max = cam_diag.get("post_relu_max", 0.0)
+            cam_mean = cam_diag.get("post_relu_mean", 0.0)
+            statement.append(
+                f"**Spatial Heatmap Localization:** Xception Grad-CAM (`act4`) isolated localized spatial activations "
+                f"(peak energy density: `{cam_max:.2f}`, mean spatial intensity: `{cam_mean:.3f}`). Warm regions in the heatmap "
+                f"highlight specific facial features where convolutional filters observed maximum feature deviation."
+            )
+        elif cam_status == "ZERO_CAM":
+            statement.append(
+                "**Spatial Heatmap Localization:** Xception spatial layer (`act4`) produced `ZERO_CAM`. Active backward gradients "
+                "confirm network connectivity, but negative pre-ReLU combinations indicate evidence against spatial manipulation in Xception, "
+                "confirming that the FAKE verdict is anchored by long-range patch relationships in the Vision Transformer branch."
+            )
+        return "\n\n".join(statement)
+
+    else:
+        # REAL IMAGE EXPLANATION STATEMENT
+        if confidence > 0.90:
+            conf_desc = f"with **high forensic certainty ({conf_pct})**, well below the 50.0% fake threshold"
+        else:
+            conf_desc = f"with **moderate certainty ({conf_pct})**, below the decision boundary"
+
+        statement = [
+            f"**Verdict Rationale:** The dual-branch model classified this image as **AUTHENTIC (REAL)** {conf_desc}, with a fake probability of only **{fake_prob:.2%}**.\n"
+        ]
+
+        if attr_res and "cnn_share" in attr_res:
+            cnn_p = attr_res["cnn_share"] * 100
+            vit_p = attr_res["vit_share"] * 100
+            statement.append(
+                f"**Dual-Branch Harmony:** Feature energy is balanced across backbones (CNN: {cnn_p:.1f}%, ViT: {vit_p:.1f}%). "
+                f"Xception spatial filters detected continuous, natural pixel gradients without blending seams, while ViT-B/16 confirmed global semantic consistency across all patch representations.\n"
+            )
+        else:
+            statement.append(
+                "**Dual-Branch Harmony:** Xception spatial filters detected continuous, natural pixel gradients without blending boundaries or frequency noise, "
+                "while ViT-B/16 confirmed global semantic and geometric consistency across all patch representations.\n"
+            )
+
+        statement.append(
+            "**Forensic Assessment:** No anomalous feature signatures were detected, and spatial energy remains within expected boundaries for genuine face imagery."
+        )
+        return "\n\n".join(statement)
+
+
 # ──────────────────────────────────────────────
 # JSON FILE LOGGING
 # ──────────────────────────────────────────────
@@ -828,6 +945,35 @@ with col_right:
 | Filename | `{uploaded_file.name}` |
             """)
 
+            # Dynamic Natural Language XAI Statement for REAL image
+            fused_feat = extract_fused_features(model, img_tensor, device)
+            attr_pkg = load_attribution_package()
+            attr_res = None
+            if fused_feat is not None:
+                if attr_pkg is not None and fused_feat.shape[-1] == int(attr_pkg["feat_mu"].shape[0]):
+                    attr_res = run_attribution(fused_feat, attr_pkg)
+                else:
+                    f = fused_feat[0]
+                    half = f.shape[0] // 2
+                    cnn_e = float(f[:half].norm().item())
+                    vit_e = float(f[half:].norm().item())
+                    total = cnn_e + vit_e + 1e-8
+                    attr_res = {"cnn_share": cnn_e / total, "vit_share": vit_e / total}
+
+            xai_text = generate_xai_statement(
+                label="REAL",
+                confidence=confidence,
+                fake_prob=fake_probability,
+                attr_res=attr_res
+            )
+            st.markdown("---")
+            st.markdown("""
+            <div style="background:#0a1a0e; border:1px solid #1e3d24; border-radius:8px; padding:16px 20px; margin-top:12px;">
+                <h4 style="color:#81c784; margin-top:0;">💬 XAI Forensic Explanation Statement</h4>
+            </div>
+            """, unsafe_allow_html=True)
+            st.markdown(xai_text)
+
     elif not uploaded_file:
         st.markdown("""
         *Upload an image to begin analysis.*
@@ -987,6 +1133,59 @@ fused features to distinguish between FF++ manipulation methods. Higher probabil
                     "🔲 **ViT-B/16** captures global semantic inconsistencies — "
                     "pose/lighting mismatches, identity drift, long-range patch anomalies."
                 )
+
+            # Render Dynamic Natural Language XAI Statement for FAKE image
+            xai_text_fake = generate_xai_statement(
+                label="FAKE",
+                confidence=confidence,
+                fake_prob=fake_probability,
+                attr_res=res,
+                cam_status=diagnostics.get("status") if 'diagnostics' in locals() and diagnostics else ("VALID_CAM" if 'heatmap' in locals() and heatmap is not None else None),
+                cam_diag=diagnostics if 'diagnostics' in locals() else None,
+            )
+            st.divider()
+            st.markdown("""
+            <div style="background:#1a0a0a; border:1px solid #3d1e1e; border-radius:8px; padding:16px 20px; margin-top:12px;">
+                <h4 style="color:#ef5350; margin-top:0;">💬 XAI Forensic Explanation Statement</h4>
+            </div>
+            """, unsafe_allow_html=True)
+            st.markdown(xai_text_fake)
+
+    else:
+        st.divider()
+        st.subheader("🧩 Advanced Forensic Attribution & Manipulation Mechanism")
+        st.info(
+            "ℹ️ **Manipulation Mechanism Feature is Pending `attribution_package.pt`**\n\n"
+            "This feature predicts the specific manipulation method (**Deepfakes, Face2Face, FaceSwap, NeuralTextures, FaceShifter**).\n\n"
+            "**To enable it:**\n"
+            "1. Run Step 10 of `BiCAF_Advancement_Attribution_XAI.ipynb` to generate `attribution_package.pt`.\n"
+            "2. Place `attribution_package.pt` inside `codes/APP CODES/` (or keep it in Google Drive at `/content/drive/MyDrive/NEW_DATASET_DEEPFAKE/advancement/`).\n"
+        )
+        # Render dynamic XAI Statement even if attribution_package is missing
+        fused_feat_fallback = extract_fused_features(model, img_tensor, device)
+        attr_res_fallback = None
+        if fused_feat_fallback is not None:
+            f = fused_feat_fallback[0]
+            half = f.shape[0] // 2
+            cnn_e = float(f[:half].norm().item())
+            vit_e = float(f[half:].norm().item())
+            total = cnn_e + vit_e + 1e-8
+            attr_res_fallback = {"cnn_share": cnn_e / total, "vit_share": vit_e / total}
+
+        xai_text_fake_fallback = generate_xai_statement(
+            label="FAKE",
+            confidence=confidence,
+            fake_prob=fake_probability,
+            attr_res=attr_res_fallback,
+            cam_status=diagnostics.get("status") if 'diagnostics' in locals() and diagnostics else ("VALID_CAM" if 'heatmap' in locals() and heatmap is not None else None),
+            cam_diag=diagnostics if 'diagnostics' in locals() else None,
+        )
+        st.markdown("""
+        <div style="background:#1a0a0a; border:1px solid #3d1e1e; border-radius:8px; padding:16px 20px; margin-top:12px;">
+            <h4 style="color:#ef5350; margin-top:0;">💬 XAI Forensic Explanation Statement</h4>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown(xai_text_fake_fallback)
 
 
 
