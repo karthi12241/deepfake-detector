@@ -88,6 +88,118 @@ except Exception as error:
 # Custom CSS — professional business styling
 st.markdown("""
 <style>
+    /* Page frame and screenshot-friendly content sizing */
+    .block-container {
+        padding-top: 1.6rem;
+        padding-bottom: 2rem;
+        max-width: 1500px;
+    }
+    [data-testid="stImage"] img {
+        max-height: 360px;
+        object-fit: contain;
+    }
+    [data-testid="stDataFrame"] {
+        border: 1px solid #252d3b;
+        border-radius: 10px;
+        overflow: hidden;
+    }
+
+    /* Main title banner */
+    .app-hero {
+        position: relative;
+        overflow: hidden;
+        padding: clamp(22px, 3vw, 38px);
+        margin: 4px 0 20px;
+        background:
+            radial-gradient(ellipse at 92% 0%, rgba(79, 195, 247, 0.17), transparent 34%),
+            linear-gradient(120deg, #111827 0%, #101722 55%, #0c121c 100%);
+        border: 1px solid #27364a;
+        border-radius: 18px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+    }
+    .app-hero .hero-kicker {
+        color: #66c7ed;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        margin-bottom: 10px;
+    }
+    .app-hero h1 {
+        color: #f0f6fc;
+        font-size: clamp(1.8rem, 3.6vw, 2.65rem);
+        font-weight: 750;
+        letter-spacing: -0.035em;
+        line-height: 1.12;
+        margin: 0;
+    }
+    .app-hero p {
+        max-width: 760px;
+        color: #aab8c8;
+        font-size: 0.98rem;
+        line-height: 1.6;
+        margin: 10px 0 0;
+    }
+    .hero-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 20px;
+    }
+    .hero-meta span {
+        padding: 6px 10px;
+        background: rgba(8, 14, 23, 0.72);
+        border: 1px solid #2a394c;
+        border-radius: 999px;
+        color: #c3cfdb;
+        font-size: 0.75rem;
+        line-height: 1.2;
+    }
+
+    /* Clear, consistent section headers */
+    .section-heading {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 4px 0 12px;
+        margin: 20px 0 12px;
+        border-bottom: 1px solid #252d3b;
+    }
+    .section-heading .section-icon {
+        display: grid;
+        place-items: center;
+        width: 38px;
+        height: 38px;
+        flex: 0 0 38px;
+        background: #111c2a;
+        border: 1px solid #29394d;
+        border-radius: 10px;
+        font-size: 1.05rem;
+    }
+    .section-heading strong {
+        display: block;
+        color: #e6edf3;
+        font-size: 1.04rem;
+        font-weight: 650;
+    }
+    .section-heading small {
+        display: block;
+        color: #8b98a9;
+        font-size: 0.78rem;
+        line-height: 1.4;
+        margin-top: 2px;
+    }
+    .analysis-column-heading {
+        min-height: 36px;
+        padding: 3px 0 10px;
+        margin: 0 0 12px;
+        border-bottom: 1px solid #252d3b;
+        color: #e6edf3;
+        font-size: 1rem;
+        font-weight: 650;
+        line-height: 1.35;
+    }
+
     /* Result cards */
     .fake-box {
         background: linear-gradient(135deg, #1a0a0a 0%, #2d0f0f 100%);
@@ -1039,14 +1151,30 @@ except Exception as error:
 # MAIN PAGE
 # ──────────────────────────────────────────────
 st.markdown('<div id="app-overview"></div>', unsafe_allow_html=True)
-st.markdown("## DeepFake Image Detection System")
-st.caption(
-    f"Deepfake Detection · Xception + ViT-B/16 · {model_kind} Fusion · "
-    f"FaceForensics++ · Evaluation input: {image_size}px"
+st.markdown(f"""
+<div class="app-hero">
+    <div class="hero-kicker">Forensic image analysis · research proof of concept</div>
+    <h1>Deepfake Detection</h1>
+    <p>
+        Screen an image, review the model's decision, and inspect the available
+        forensic evidence in one focused workspace.
+    </p>
+    <div class="hero-meta">
+        <span>Xception + ViT-B/16</span>
+        <span>{html.escape(str(model_kind))} fusion</span>
+        <span>FaceForensics++</span>
+        <span>Input {image_size}px</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-heading"><span class="section-icon">🧭</span>'
+    '<span><strong>Overview</strong><small>Purpose, workflow, and analysis capabilities</small></span></div>',
+    unsafe_allow_html=True
 )
 st.markdown("""
 <div class="poc-overview">
-    <h3>🧭 Overview</h3>
+    <h3>A focused forensic workflow</h3>
     <p>
         This forensic image-analysis proof of concept brings deepfake screening and
         supporting evidence into a single workflow. A trained Xception + ViT-B/16 fusion
@@ -1076,15 +1204,23 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.divider()
 
-# ── UPLOAD + RESULT ──
+# ── IMAGE ANALYSIS ──
 st.markdown('<div id="image-analysis"></div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-heading"><span class="section-icon">🖼️</span>'
+    '<span><strong>Image analysis</strong><small>Upload an image and review its prediction and audit evidence</small></span></div>',
+    unsafe_allow_html=True
+)
 label       = None   # initialised here so Grad-CAM check below never crashes
 img_tensor  = None
 analyse_btn = False
 col_left, col_right = st.columns([1, 1], gap="large")
 
 with col_left:
-    st.subheader("📤 Upload Image for Analysis")
+    st.markdown(
+        '<div class="analysis-column-heading">📤 Upload image</div>',
+        unsafe_allow_html=True
+    )
     uploaded_file = st.file_uploader(
         "Choose an image (JPG / PNG / WEBP)",
         type=["jpg", "jpeg", "png", "webp"],
@@ -1105,7 +1241,10 @@ with col_left:
         analyse_btn = False
 
 with col_right:
-    st.subheader("📊 Detection Result")
+    st.markdown(
+        '<div class="analysis-column-heading">📊 Prediction and evidence</div>',
+        unsafe_allow_html=True
+    )
 
     if uploaded_file and analyse_btn:
         with st.spinner("🧠 Running model inference..."):
@@ -1232,8 +1371,13 @@ with col_right:
 st.markdown('<div id="explainable-ai"></div>', unsafe_allow_html=True)
 if analyse_btn and label == "FAKE" and img_tensor is not None:
     st.divider()
-    st.subheader("🔬 Explainable AI — Grad-CAM Heatmap")
-    
+    st.markdown(
+        '<div class="section-heading"><span class="section-icon">🔬</span>'
+        '<span><strong>Forensic Heatmap Analysis : GRAD-CAM</strong>'
+        '<small>Spatial attribution for the fake-class prediction</small></span></div>',
+        unsafe_allow_html=True
+    )
+
     with st.spinner("Computing Xception Grad-CAM attribution..."):
         heatmap, diagnostics, cam_error = get_gradcam(model, img_tensor, image)
 
@@ -1249,10 +1393,7 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
                      use_container_width=True)
 
         st.markdown("""
-        **Color Mapping Guide:**  
-        🔵 **Blue:** Low contribution toward FAKE prediction  
-        🟡 **Yellow / Green:** Medium contribution  
-        🔴 **Red / Warm:** High contribution toward FAKE prediction
+        **Heatmap key:** 🔵 Lower · 🟡 Moderate · 🔴 Higher contribution toward the FAKE prediction
         """)
 
     elif cam_error == "ZERO_CAM":
@@ -1295,8 +1436,12 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
             with st.spinner("🔬 Running forensic attribution analysis..."):
                 res = run_attribution(fused_feat, attr_pkg)
 
-            st.divider()
-            st.subheader("🧩 Generative Method Categorisation")
+            st.markdown(
+                '<div class="section-heading"><span class="section-icon">🧩</span>'
+                '<span><strong>Generative method categorisation</strong>'
+                '<small>Predicted method and model-branch contribution</small></span></div>',
+                unsafe_allow_html=True
+            )
 
             if res["is_unknown"]:
                 status_text = (
@@ -1381,8 +1526,12 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
             st.markdown(xai_text_fake)
 
     else:
-        st.divider()
-        st.subheader("🧩 Generative Method Categorisation")
+        st.markdown(
+            '<div class="section-heading"><span class="section-icon">🧩</span>'
+            '<span><strong>Generative method categorisation</strong>'
+            '<small>Optional attribution analysis</small></span></div>',
+            unsafe_allow_html=True
+        )
         st.info(
             "ℹ️ **Manipulation Mechanism Feature is Pending `attribution_package.pt`**\n\n"
             "This feature predicts the specific manipulation method (**Deepfakes, Face2Face, FaceSwap, NeuralTextures, FaceShifter**).\n\n"
@@ -1423,7 +1572,12 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
 # ──────────────────────────────────────────────
 st.markdown('<div id="detection-log"></div>', unsafe_allow_html=True)
 st.divider()
-st.subheader("📋 Forensic Detection Log")
+st.markdown(
+    '<div class="section-heading"><span class="section-icon">📋</span>'
+    '<span><strong>Forensic detection log</strong>'
+    '<small>Recent submissions with verdicts and image fingerprints</small></span></div>',
+    unsafe_allow_html=True
+)
 st.caption(
     "All image submissions (Deepfake and Authentic) are automatically logged with cryptographic hashes. "
     "This log can be exported as forensic evidence for verification and audit trails."
@@ -1441,6 +1595,7 @@ if log_rows:
     st.dataframe(
         df,
         use_container_width=True,
+        height=340,
         hide_index=True,
         column_config={
             "Verdict": st.column_config.TextColumn(
