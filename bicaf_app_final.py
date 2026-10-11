@@ -133,6 +133,50 @@ st.markdown("""
     section[data-testid="stSidebar"] { background: #0d1117; }
     section[data-testid="stSidebar"] .stRadio label { font-size: 0.9rem; }
 
+    /* Sidebar contents navigation */
+    .contents-menu {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 8px;
+    }
+    .contents-menu a {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 11px 12px;
+        background: linear-gradient(135deg, #111827 0%, #0e1117 100%);
+        border: 1px solid #252d3b;
+        border-radius: 10px;
+        color: #e6edf3 !important;
+        text-decoration: none !important;
+        transition: border-color 0.2s ease, background 0.2s ease;
+    }
+    .contents-menu a:hover {
+        background: #151e2c;
+        border-color: #4fc3f7;
+    }
+    .contents-menu .contents-icon {
+        width: 28px;
+        flex: 0 0 28px;
+        font-size: 1.15rem;
+        text-align: center;
+    }
+    .contents-menu .contents-copy {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+    .contents-menu strong {
+        font-size: 0.88rem;
+        font-weight: 600;
+    }
+    .contents-menu small {
+        color: #8b98a9;
+        font-size: 0.73rem;
+        line-height: 1.3;
+    }
+
     /* Metric cards */
     [data-testid="stMetric"] {
         background: #0e1117;
@@ -839,12 +883,42 @@ def count_detections() -> int:
 init_db()
 
 # ──────────────────────────────────────────────
-# SIDEBAR — minimal, professional
+# SIDEBAR — app contents
 # ──────────────────────────────────────────────
-st.sidebar.markdown("## 🔍 DeepFake Detector")
-st.sidebar.caption("Xception + ViT-B/16 · checkpoint-matched fusion · FF++")
-st.sidebar.divider()
-st.sidebar.caption("M.Tech Project · Enhanced Deepfake Detection Framework")
+st.sidebar.markdown("""
+<div class="contents-menu">
+    <div style="padding: 0 2px 4px;">
+        <div style="font-size: 1.15rem; font-weight: 700; color: #f0f6fc;">📚 App contents</div>
+        <div style="margin-top: 4px; color: #8b98a9; font-size: 0.8rem;">
+            Explore the tools and reports
+        </div>
+    </div>
+    <a href="#app-overview">
+        <span class="contents-icon">🧭</span>
+        <span class="contents-copy"><strong>Overview</strong><small>Model metrics and framework</small></span>
+    </a>
+    <a href="#upload-analysis">
+        <span class="contents-icon">📤</span>
+        <span class="contents-copy"><strong>Upload &amp; analyse</strong><small>Submit an image for checking</small></span>
+    </a>
+    <a href="#detection-result">
+        <span class="contents-icon">📊</span>
+        <span class="contents-copy"><strong>Detection result</strong><small>Verdict and forensic evidence</small></span>
+    </a>
+    <a href="#explainable-ai">
+        <span class="contents-icon">🔬</span>
+        <span class="contents-copy"><strong>Explainable AI</strong><small>Grad-CAM visual analysis</small></span>
+    </a>
+    <a href="#forensic-attribution">
+        <span class="contents-icon">🧩</span>
+        <span class="contents-copy"><strong>Forensic attribution</strong><small>Manipulation and branch insights</small></span>
+    </a>
+    <a href="#detection-log">
+        <span class="contents-icon">📋</span>
+        <span class="contents-copy"><strong>Detection log</strong><small>Review and export recent cases</small></span>
+    </a>
+</div>
+""", unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────
 # LOAD MODEL (silent — no UI clutter)
@@ -862,21 +936,12 @@ except Exception as error:
 # ──────────────────────────────────────────────
 # MAIN PAGE
 # ──────────────────────────────────────────────
+st.markdown('<div id="app-overview"></div>', unsafe_allow_html=True)
 st.markdown("## DeepFake Image Detection System")
 st.caption(
-    f"Forensic Source Attribution · Xception + ViT-B/16 · {model_kind} Fusion · "
+    f"Deepfake Detection · Xception + ViT-B/16 · {model_kind} Fusion · "
     f"FaceForensics++ · Evaluation input: {image_size}px"
 )
-st.divider()
-
-# Stats row
-total_logged = count_detections()
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Accuracy", "96.0%", "FF++ Test Set")
-c2.metric("ROC-AUC", "98.0%", "Bidirectional Fusion")
-c3.metric("Precision", "98.0%", "Fake Class")
-c4.metric("Cases Logged", str(total_logged))
-
 st.divider()
 
 # ── UPLOAD + RESULT ──
@@ -886,6 +951,7 @@ analyse_btn = False
 col_left, col_right = st.columns([1, 1], gap="large")
 
 with col_left:
+    st.markdown('<div id="upload-analysis"></div>', unsafe_allow_html=True)
     st.subheader("📤 Upload Image for Analysis")
     uploaded_file = st.file_uploader(
         "Choose an image (JPG / PNG / WEBP)",
@@ -907,6 +973,7 @@ with col_left:
         analyse_btn = False
 
 with col_right:
+    st.markdown('<div id="detection-result"></div>', unsafe_allow_html=True)
     st.subheader("📊 Detection Result")
 
     if uploaded_file and analyse_btn:
@@ -1025,17 +1092,17 @@ with col_right:
 
         **How it works:**
         1. Upload any face image
-        2. Dual-branch model analyses spatial & semantic features
-        3. Explainable AI (Grad-CAM) localizes manipulated regions for deepfakes
+        2. Dual branch model analyses spatial & semantic features
+        3. Grad CAM localizes manipulated regions for deepfakes
         4. Complete forensic audit trail recorded with cryptographic hash
         """)
 
 # ── GRAD-CAM — full width below both columns, FAKE detections only ──────────
 if analyse_btn and label == "FAKE" and img_tensor is not None:
+    st.markdown('<div id="explainable-ai"></div>', unsafe_allow_html=True)
     st.divider()
-    st.subheader("🔬 Explainable AI — Xception Grad-CAM")
-    st.caption("🔴 Red/warm regions indicate areas with stronger contribution to the FAKE prediction through the Xception branch.")
-
+    st.subheader("🔬 Forensic Heatmap Analysis : GRAD-CAM")
+    
     with st.spinner("Computing Xception Grad-CAM attribution..."):
         heatmap, diagnostics, cam_error = get_gradcam(model, img_tensor, image)
 
@@ -1057,13 +1124,6 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
         🔴 **Red / Warm:** High contribution toward FAKE prediction
         """)
 
-        st.info(
-            "💡 **Attribution Note:** Warm regions indicate Xception feature regions contributing positively "
-            "toward the model's FAKE logit. This is an attribution map, not proof of pixel-level manipulation.\n\n"
-            "**Architecture Context:** In this dual-branch architecture (`Xception + ViT-B/16 with Feature Fusion`), "
-            "Xception Grad-CAM targets the final spatial representation (`act4`) directly preceding global pooling and fusion. "
-            "Global semantic cues and long-range patch dependencies are processed in parallel by the Vision Transformer branch."
-        )
     elif cam_error == "ZERO_CAM":
         target_name = diagnostics.get("target_layer_name", "model.cnn.act4")
         st.info(
@@ -1093,6 +1153,7 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
 # is available on Drive (produced by BiCAF_Advancement_Attribution_XAI.ipynb).
 # The app runs perfectly without it — this section is silently skipped.
 if analyse_btn and label == "FAKE" and img_tensor is not None:
+    st.markdown('<div id="forensic-attribution"></div>', unsafe_allow_html=True)
     attr_pkg = load_attribution_package()
 
     if attr_pkg is not None:
@@ -1104,20 +1165,15 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
                 res = run_attribution(fused_feat, attr_pkg)
 
             st.divider()
-            st.subheader("🧩 Advanced Forensic Attribution")
+            st.subheader("🧩 Generative Method Categorisation")
             st.caption(
                 "Powered by the BiCAF attribution module trained on frozen fused features. "
-                "Results are probabilistic — use alongside Grad-CAM for full context."
             )
 
             # ── Open-set / zero-day detection ──────────────────────────────────
             if res["is_unknown"]:
                 st.warning(
                     f"⚠️ **Possible Zero-Day / Unknown Manipulation Technique**\n\n"
-                    f"The feature signature of this image does not match any manipulation "
-                    f"method seen during training. This may indicate a **novel or unseen "
-                    f"deepfake technique** (Mahalanobis score: **{res['maha_score']:.1f}** "
-                    f"> threshold: **{res['os_thr']:.1f}**). Exercise additional caution."
                 )
             else:
                 st.success(
@@ -1237,6 +1293,7 @@ fused features to distinguish between FF++ manipulation methods. Higher probabil
 # ──────────────────────────────────────────────
 # FORENSIC LOG TABLE
 # ──────────────────────────────────────────────
+st.markdown('<div id="detection-log"></div>', unsafe_allow_html=True)
 st.divider()
 st.subheader("📋 Forensic Detection Log")
 st.caption(
@@ -1285,6 +1342,6 @@ else:
 st.divider()
 st.caption(
     "Enhanced Deepfake Detection Framework · M.Tech Project · "
-    "Xception + ViT-B/16 · Gated Feature Fusion · FaceForensics++ · "
-    "Accuracy 96.0% · AUC 0.994"
+    "Xception + ViT-B/16 · Bidirectional Cross Attention Feature Fusion · FaceForensics++ · "
+    "Accuracy 96.0% · ROC-AUC 98.0% · Precision 98.0%"
 )
