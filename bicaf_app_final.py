@@ -1183,7 +1183,7 @@ with col_right:
             st.markdown("---")
             st.markdown("""
             <div class="xai-summary real">
-                <h4>💬 XAI Summary</h4>
+                <h4>💬Summary</h4>
             </div>
             """, unsafe_allow_html=True)
             st.markdown(xai_text)
