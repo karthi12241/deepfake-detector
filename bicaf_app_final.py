@@ -1342,7 +1342,7 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
             st.divider()
             st.markdown("""
             <div class="xai-summary fake">
-                <h4>💬 XAI Summary</h4>
+                <h4>💬Summary</h4>
             </div>
             """, unsafe_allow_html=True)
             st.markdown(xai_text_fake)
@@ -1377,7 +1377,7 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
         )
         st.markdown("""
         <div class="xai-summary fake">
-            <h4>💬 XAI Summary</h4>
+            <h4>💬Summary</h4>
         </div>
         """, unsafe_allow_html=True)
         st.markdown(xai_text_fake_fallback)
