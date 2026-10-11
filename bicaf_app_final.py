@@ -58,6 +58,7 @@ from PIL import Image
 import json
 import datetime
 import hashlib
+import html
 import numpy as np
 import cv2
 
@@ -177,7 +178,7 @@ st.markdown("""
         line-height: 1.3;
     }
 
-    /* Proof-of-concept introduction */
+    /* Overview and forensic summary panels */
     .poc-overview {
         background: linear-gradient(135deg, #111827 0%, #0e1117 100%);
         border: 1px solid #252d3b;
@@ -189,17 +190,97 @@ st.markdown("""
     .poc-overview h3 {
         color: #f0f6fc;
         font-size: 1.08rem;
-        margin: 0 0 8px;
+        margin: 0 0 6px;
     }
     .poc-overview p {
         color: #b8c2cf;
         line-height: 1.6;
         margin: 0;
     }
+    .overview-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 10px;
+        margin-top: 16px;
+    }
+    .overview-item {
+        min-width: 0;
+        padding: 13px 14px;
+        background: #0b1220;
+        border: 1px solid #252d3b;
+        border-radius: 9px;
+    }
+    .overview-item strong {
+        display: block;
+        color: #e6edf3;
+        font-size: 0.86rem;
+        margin-bottom: 5px;
+    }
+    .overview-item span {
+        display: block;
+        color: #9aa8b8;
+        font-size: 0.78rem;
+        line-height: 1.5;
+    }
     .poc-overview .poc-note {
         color: #8b98a9;
         font-size: 0.82rem;
         margin-top: 12px;
+    }
+    .method-prediction-card {
+        min-height: 112px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 7px;
+        padding: 15px 16px;
+        margin: 8px 0 14px;
+        background: linear-gradient(135deg, #111827 0%, #0e1117 100%);
+        border: 1px solid #252d3b;
+        border-radius: 10px;
+    }
+    .method-prediction-card span {
+        color: #8b98a9;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+    }
+    .method-prediction-card strong {
+        color: #f0f6fc;
+        font-size: clamp(1rem, 1.8vw, 1.35rem);
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+        word-break: normal;
+    }
+    .method-prediction-card small {
+        color: #4fc3f7;
+        font-size: 0.82rem;
+    }
+    .forensic-status {
+        padding: 9px 12px;
+        margin: 8px 0 16px;
+        background: #101a26;
+        border: 1px solid #26384b;
+        border-radius: 8px;
+        color: #b8c2cf;
+        font-size: 0.82rem;
+        line-height: 1.45;
+    }
+    .xai-summary {
+        padding: 14px 18px;
+        margin: 12px 0 8px;
+        background: #0e1117;
+        border: 1px solid #2a3442;
+        border-left: 4px solid #4fc3f7;
+        border-radius: 9px;
+    }
+    .xai-summary.real { border-left-color: #43a047; }
+    .xai-summary.fake { border-left-color: #ef5350; }
+    .xai-summary h4 {
+        color: #e6edf3;
+        font-size: 0.98rem;
+        margin: 0;
     }
 
     /* Metric cards */
@@ -913,22 +994,18 @@ init_db()
 st.sidebar.markdown("""
 <div class="contents-menu">
     <div style="padding: 0 2px 4px;">
-        <div style="font-size: 1.15rem; font-weight: 700; color: #f0f6fc;">📚 App contents</div>
+        <div style="font-size: 1.15rem; font-weight: 700; color: #f0f6fc;">Contents</div>
         <div style="margin-top: 4px; color: #8b98a9; font-size: 0.8rem;">
             Explore the tools and reports
         </div>
     </div>
     <a href="#app-overview">
         <span class="contents-icon">🧭</span>
-        <span class="contents-copy"><strong>About this POC</strong><small>Purpose and scope of the demo</small></span>
+        <span class="contents-copy"><strong>Overview</strong><small>Purpose and capabilities</small></span>
     </a>
-    <a href="#upload-analysis">
+    <a href="#image-analysis">
         <span class="contents-icon">📤</span>
-        <span class="contents-copy"><strong>Upload an image</strong><small>Start a deepfake screening</small></span>
-    </a>
-    <a href="#detection-result">
-        <span class="contents-icon">📊</span>
-        <span class="contents-copy"><strong>Prediction &amp; evidence</strong><small>Verdict, confidence, and audit record</small></span>
+        <span class="contents-copy"><strong>Image analysis</strong><small>Upload, prediction, and evidence</small></span>
     </a>
     <a href="#explainable-ai">
         <span class="contents-icon">🔬</span>
@@ -969,30 +1046,44 @@ st.caption(
 )
 st.markdown("""
 <div class="poc-overview">
-    <h3>💡 About this proof of concept</h3>
+    <h3>🧭 Overview</h3>
     <p>
-        This app demonstrates an image-based workflow for screening a face image for
-        possible deepfake manipulation. Upload an image to receive a REAL/FAKE prediction
-        from the Xception + ViT-B/16 model, with a confidence score and a recorded audit
-        entry. For fake predictions, the app can also show a Grad-CAM visualization and,
-        when its optional attribution package is available, further forensic insights.
+        This forensic image-analysis proof of concept brings deepfake screening and
+        supporting evidence into a single workflow. A trained Xception + ViT-B/16 fusion
+        model produces a REAL/FAKE prediction and confidence score; the app records each
+        submission in an auditable detection log.
     </p>
+    <div class="overview-grid">
+        <div class="overview-item">
+            <strong>Image screening</strong>
+            <span>Analyse an uploaded image and review its prediction, confidence, and recorded evidence.</span>
+        </div>
+        <div class="overview-item">
+            <strong>Explainable AI summary</strong>
+            <span>Review an XAI summary of the model output; fake predictions also include a Grad-CAM heatmap.</span>
+        </div>
+        <div class="overview-item">
+            <strong>Generative method categorisation</strong>
+            <span>When optional attribution data is available, review the predicted manipulation method and model-branch contribution.</span>
+        </div>
+    </div>
     <p class="poc-note">
-        This is a research demonstration, not a definitive forensic test. Model predictions
-        and visual attributions can be incorrect and should be reviewed with other evidence.
+        The Streamlit application is a proof of concept that demonstrates how the trained
+        model can be integrated into an end-user forensic tool. It is intended to show
+        practical usability, not real-time performance.
     </p>
 </div>
 """, unsafe_allow_html=True)
 st.divider()
 
 # ── UPLOAD + RESULT ──
+st.markdown('<div id="image-analysis"></div>', unsafe_allow_html=True)
 label       = None   # initialised here so Grad-CAM check below never crashes
 img_tensor  = None
 analyse_btn = False
 col_left, col_right = st.columns([1, 1], gap="large")
 
 with col_left:
-    st.markdown('<div id="upload-analysis"></div>', unsafe_allow_html=True)
     st.subheader("📤 Upload Image for Analysis")
     uploaded_file = st.file_uploader(
         "Choose an image (JPG / PNG / WEBP)",
@@ -1014,7 +1105,6 @@ with col_left:
         analyse_btn = False
 
 with col_right:
-    st.markdown('<div id="detection-result"></div>', unsafe_allow_html=True)
     st.subheader("📊 Detection Result")
 
     if uploaded_file and analyse_btn:
@@ -1121,8 +1211,8 @@ with col_right:
             )
             st.markdown("---")
             st.markdown("""
-            <div style="background:#0a1a0e; border:1px solid #1e3d24; border-radius:8px; padding:16px 20px; margin-top:12px;">
-                <h4 style="color:#81c784; margin-top:0;">💬 XAI Forensic Explanation Statement</h4>
+            <div class="xai-summary real">
+                <h4>💬 XAI Summary</h4>
             </div>
             """, unsafe_allow_html=True)
             st.markdown(xai_text)
@@ -1142,7 +1232,7 @@ with col_right:
 st.markdown('<div id="explainable-ai"></div>', unsafe_allow_html=True)
 if analyse_btn and label == "FAKE" and img_tensor is not None:
     st.divider()
-    st.subheader("🔬 Forensic Heatmap Analysis : GRAD-CAM")
+    st.subheader("🔬 Explainable AI — Grad-CAM Heatmap")
     
     with st.spinner("Computing Xception Grad-CAM attribution..."):
         heatmap, diagnostics, cam_error = get_gradcam(model, img_tensor, image)
@@ -1207,48 +1297,45 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
 
             st.divider()
             st.subheader("🧩 Generative Method Categorisation")
-            st.caption(
-                "Powered by the BiCAF attribution module trained on frozen fused features. "
-            )
 
-            # ── Open-set / zero-day detection ──────────────────────────────────
             if res["is_unknown"]:
-                st.warning(
-                    f"⚠️ **Possible Zero-Day / Unknown Manipulation Technique**\n\n"
+                status_text = (
+                    "No close match to the manipulation signatures represented in "
+                    f"the available attribution data (score {res['maha_score']:.1f}; "
+                    f"reference threshold {res['os_thr']:.1f})."
                 )
             else:
-                st.success(
-                    f"✅ **Known Manipulation Signature** — Feature distribution matches "
-                    f"the training set (Mahalanobis: **{res['maha_score']:.1f}**, "
-                    f"threshold: **{res['os_thr']:.1f}**)."
+                status_text = (
+                    "The image feature pattern is within the known signature range "
+                    f"(score {res['maha_score']:.1f}; "
+                    f"reference threshold {res['os_thr']:.1f})."
                 )
+            st.markdown(
+                f'<div class="forensic-status">{html.escape(status_text)}</div>',
+                unsafe_allow_html=True
+            )
 
             col_attr, col_branch = st.columns(2, gap="large")
 
             # ── Manipulation-method attribution ─────────────────────────────────
             with col_attr:
-                st.markdown("**🏷️ Predicted Manipulation Method**")
+                st.markdown("**🏷️ Predicted manipulation method**")
                 nice = _FRIENDLY_NAMES.get(res["pred_class"],
                                            res["pred_class"].replace("_", " ").title())
-                st.metric(
-                    label="Top prediction",
-                    value=nice,
-                    delta=f"{res['pred_conf']:.1%} confidence",
+                st.markdown(
+                    f'<div class="method-prediction-card">'
+                    f'<span>Top prediction</span>'
+                    f'<strong>{html.escape(nice)}</strong>'
+                    f'<small>{res["pred_conf"]:.1%} confidence</small>'
+                    f'</div>',
+                    unsafe_allow_html=True
                 )
-                st.caption("Probability breakdown across all known methods:")
+                st.caption("Probability by known method")
                 for cls, p in sorted(res["all_probs"].items(), key=lambda x: -x[1]):
                     if cls == "real":
                         continue
                     bar_text = f"{_FRIENDLY_NAMES.get(cls, cls)}: {p:.1%}"
                     st.progress(float(p), text=bar_text)
-
-                st.markdown("""
-<div style="background:#0e1117;border:1px solid #2a2a3a;border-radius:8px;
-padding:12px 16px;margin-top:12px;font-size:0.82rem;color:#aaa;">
-<b>How to read this:</b> The MLP attribution head was trained on frozen BiCAF 
-fused features to distinguish between FF++ manipulation methods. Higher probability 
-→ stronger match to that method's feature signature.
-</div>""", unsafe_allow_html=True)
 
             # ── Branch contribution ─────────────────────────────────────────────
             with col_branch:
@@ -1287,15 +1374,15 @@ fused features to distinguish between FF++ manipulation methods. Higher probabil
             )
             st.divider()
             st.markdown("""
-            <div style="background:#1a0a0a; border:1px solid #3d1e1e; border-radius:8px; padding:16px 20px; margin-top:12px;">
-                <h4 style="color:#ef5350; margin-top:0;">💬 XAI Forensic Explanation Statement</h4>
+            <div class="xai-summary fake">
+                <h4>💬 XAI Summary</h4>
             </div>
             """, unsafe_allow_html=True)
             st.markdown(xai_text_fake)
 
     else:
         st.divider()
-        st.subheader("🧩 Advanced Forensic Attribution & Manipulation Mechanism")
+        st.subheader("🧩 Generative Method Categorisation")
         st.info(
             "ℹ️ **Manipulation Mechanism Feature is Pending `attribution_package.pt`**\n\n"
             "This feature predicts the specific manipulation method (**Deepfakes, Face2Face, FaceSwap, NeuralTextures, FaceShifter**).\n\n"
@@ -1323,8 +1410,8 @@ fused features to distinguish between FF++ manipulation methods. Higher probabil
             cam_diag=diagnostics if 'diagnostics' in locals() else None,
         )
         st.markdown("""
-        <div style="background:#1a0a0a; border:1px solid #3d1e1e; border-radius:8px; padding:16px 20px; margin-top:12px;">
-            <h4 style="color:#ef5350; margin-top:0;">💬 XAI Forensic Explanation Statement</h4>
+        <div class="xai-summary fake">
+            <h4>💬 XAI Summary</h4>
         </div>
         """, unsafe_allow_html=True)
         st.markdown(xai_text_fake_fallback)
