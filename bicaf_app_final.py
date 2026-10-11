@@ -177,6 +177,31 @@ st.markdown("""
         line-height: 1.3;
     }
 
+    /* Proof-of-concept introduction */
+    .poc-overview {
+        background: linear-gradient(135deg, #111827 0%, #0e1117 100%);
+        border: 1px solid #252d3b;
+        border-left: 4px solid #4fc3f7;
+        border-radius: 12px;
+        padding: 20px 22px;
+        margin: 18px 0;
+    }
+    .poc-overview h3 {
+        color: #f0f6fc;
+        font-size: 1.08rem;
+        margin: 0 0 8px;
+    }
+    .poc-overview p {
+        color: #b8c2cf;
+        line-height: 1.6;
+        margin: 0;
+    }
+    .poc-overview .poc-note {
+        color: #8b98a9;
+        font-size: 0.82rem;
+        margin-top: 12px;
+    }
+
     /* Metric cards */
     [data-testid="stMetric"] {
         background: #0e1117;
@@ -895,27 +920,27 @@ st.sidebar.markdown("""
     </div>
     <a href="#app-overview">
         <span class="contents-icon">🧭</span>
-        <span class="contents-copy"><strong>Overview</strong><small>Model metrics and framework</small></span>
+        <span class="contents-copy"><strong>About this POC</strong><small>Purpose and scope of the demo</small></span>
     </a>
     <a href="#upload-analysis">
         <span class="contents-icon">📤</span>
-        <span class="contents-copy"><strong>Upload &amp; analyse</strong><small>Submit an image for checking</small></span>
+        <span class="contents-copy"><strong>Upload an image</strong><small>Start a deepfake screening</small></span>
     </a>
     <a href="#detection-result">
         <span class="contents-icon">📊</span>
-        <span class="contents-copy"><strong>Detection result</strong><small>Verdict and forensic evidence</small></span>
+        <span class="contents-copy"><strong>Prediction &amp; evidence</strong><small>Verdict, confidence, and audit record</small></span>
     </a>
     <a href="#explainable-ai">
         <span class="contents-icon">🔬</span>
-        <span class="contents-copy"><strong>Explainable AI</strong><small>Grad-CAM visual analysis</small></span>
+        <span class="contents-copy"><strong>Grad-CAM heatmap</strong><small>Shown for FAKE predictions</small></span>
     </a>
     <a href="#forensic-attribution">
         <span class="contents-icon">🧩</span>
-        <span class="contents-copy"><strong>Forensic attribution</strong><small>Manipulation and branch insights</small></span>
+        <span class="contents-copy"><strong>Method categorisation</strong><small>Optional; requires attribution data</small></span>
     </a>
     <a href="#detection-log">
         <span class="contents-icon">📋</span>
-        <span class="contents-copy"><strong>Detection log</strong><small>Review and export recent cases</small></span>
+        <span class="contents-copy"><strong>Forensic detection log</strong><small>Review or export recent cases</small></span>
     </a>
 </div>
 """, unsafe_allow_html=True)
@@ -942,6 +967,22 @@ st.caption(
     f"Deepfake Detection · Xception + ViT-B/16 · {model_kind} Fusion · "
     f"FaceForensics++ · Evaluation input: {image_size}px"
 )
+st.markdown("""
+<div class="poc-overview">
+    <h3>💡 About this proof of concept</h3>
+    <p>
+        This app demonstrates an image-based workflow for screening a face image for
+        possible deepfake manipulation. Upload an image to receive a REAL/FAKE prediction
+        from the Xception + ViT-B/16 model, with a confidence score and a recorded audit
+        entry. For fake predictions, the app can also show a Grad-CAM visualization and,
+        when its optional attribution package is available, further forensic insights.
+    </p>
+    <p class="poc-note">
+        This is a research demonstration, not a definitive forensic test. Model predictions
+        and visual attributions can be incorrect and should be reviewed with other evidence.
+    </p>
+</div>
+""", unsafe_allow_html=True)
 st.divider()
 
 # ── UPLOAD + RESULT ──
@@ -1098,8 +1139,8 @@ with col_right:
         """)
 
 # ── GRAD-CAM — full width below both columns, FAKE detections only ──────────
+st.markdown('<div id="explainable-ai"></div>', unsafe_allow_html=True)
 if analyse_btn and label == "FAKE" and img_tensor is not None:
-    st.markdown('<div id="explainable-ai"></div>', unsafe_allow_html=True)
     st.divider()
     st.subheader("🔬 Forensic Heatmap Analysis : GRAD-CAM")
     
@@ -1152,8 +1193,8 @@ if analyse_btn and label == "FAKE" and img_tensor is not None:
 # Shown below Grad-CAM for FAKE detections only, when attribution_package.pt
 # is available on Drive (produced by BiCAF_Advancement_Attribution_XAI.ipynb).
 # The app runs perfectly without it — this section is silently skipped.
+st.markdown('<div id="forensic-attribution"></div>', unsafe_allow_html=True)
 if analyse_btn and label == "FAKE" and img_tensor is not None:
-    st.markdown('<div id="forensic-attribution"></div>', unsafe_allow_html=True)
     attr_pkg = load_attribution_package()
 
     if attr_pkg is not None:
